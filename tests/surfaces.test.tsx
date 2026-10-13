@@ -1311,3 +1311,132 @@ test('files a Grep or Glob search returns shimmer as reads, relative names resol
   expect(await texts(ui)).toContain(shimmer('a.ts', 'purple'))
   await ui.unmount()
 })
+
+// The Files tab of the /mods hub: `$.filetree.panel` and `$.filetree.act`.
+type Rows = { key: string; value: string; options?: string[] }[]
+type Mods = { panes: string[]; rows: Rows; sets: unknown[]; deny?: string }
+function modsWorld(on: any, w: Mods) {
+  on('ui.panes', () => ({ value: w.panes.map(id => ({ id, title: 'Files: proj', isShown: true, isFocused: false, isPlaced: true })) }))
+  on('ui.close', (_$: any, e: any) => {
+    w.panes = w.panes.filter(id => id !== e.id)
+    return { value: undefined }
+  })
+  on('config.list', () => ({ value: w.rows.map(r => ({ label: r.key, kind: r.options ? 'choice' : 'text', provider: { plugin: 'filetree' }, isLocked: false, ...r })) }))
+  on('config.set', (_$: any, e: any) => {
+    w.sets.push({ key: e.key, value: e.value })
+    return w.deny ? { deny: w.deny } : { value: e.value }
+  })
+}
+
+const ROWS: Rows = [
+  { key: 'filetree.activity', value: 'writes', options: ['reads and writes', 'writes', 'reads', 'none'] },
+  { key: 'filetree.column', value: 'age', options: ['date', 'age', 'size'] },
+  { key: 'filetree.open', value: 'code -g {path}' },
+]
+
+const itemsOf = (p: FiletreePanel) => p.sections.flatMap(s => s.items)
+const itemOf = (p: FiletreePanel, id: string) => itemsOf(p).find(i => 'id' in i && i.id === id) as any
+
+test('the Files tab: summary, View and Settings in English', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main...origin/main\0', numstat: '' }, ran)
+  const w: Mods = { panes: ['filetree'], rows: ROWS, sets: [] }
+  modsWorld(on, w)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const p = await panelOf($)
+  expect(p.title).toBe('Files')
+  expect(p.summary).toBe('~/proj · pane open · branch main')
+  expect(p.sections.map(s => [s.id, s.title])).toEqual([['view', 'View'], ['settings', 'Settings']])
+  expect(p.sections[0]?.items.map(i => ('id' in i ? i.id : i.kind))).toEqual(['open', 'folder', 'close'])
+  expect(itemOf(p, 'open')).toMatchObject({ kind: 'action', label: 'Open the file tree', primary: true })
+  expect(itemOf(p, 'close')).toMatchObject({ kind: 'action', label: 'Close the file tree' })
+  expect(p.sections[1]?.items.map(i => ('id' in i ? i.id : i.kind))).toEqual(['activity', 'glyphs', 'follow', 'start', 'column', 'hints', 'open'].map(f => `config:${f}`))
+  expect(itemOf(p, 'config:activity')).toMatchObject({ kind: 'choice', label: 'Claude activity', value: 'writes' })
+  expect(itemOf(p, 'config:column')).toMatchObject({ kind: 'choice', value: 'age', options: [{ value: 'date', label: 'date' }, { value: 'age', label: 'age' }, { value: 'size', label: 'size' }] })
+  expect(itemOf(p, 'config:glyphs')).toMatchObject({ kind: 'choice', value: 'auto' })
+  expect(itemOf(p, 'config:open')).toMatchObject({ kind: 'input', label: 'Open with' })
+  expect(itemOf(p, 'config:open').help).toContain('code -g {path}')
+  expect(JSON.stringify(p)).not.toContain('/filetree')
+  w.panes = []
+  const closed = await panelOf($)
+  expect(closed.summary).toContain('pane closed')
+  expect(itemOf(closed, 'close')).toBeUndefined()
+})
+
+test('the Files tab speaks Portuguese when the hub does', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
+  const w: Mods = { panes: ['filetree'], rows: ROWS, sets: [] }
+  modsWorld(on, w)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const p = await panelOf($, { lang: 'pt' })
+  expect(p.title).toBe('Arquivos')
+  expect(p.summary).toBe('~/proj · painel aberto')
+  expect(p.sections.map(s => s.title)).toEqual(['Visualização', 'Ajustes'])
+  expect(itemOf(p, 'open').label).toBe('Abrir a árvore de arquivos')
+  expect(itemOf(p, 'close').label).toBe('Fechar a árvore de arquivos')
+  expect(itemOf(p, 'config:column').label).toBe('Coluna da direita')
+  expect(itemOf(p, 'config:open').help).toContain('Agora: code -g {path}')
+  const english = ['Open the file tree', 'Settings', 'View', 'Right column', 'pane open', 'Now:']
+  for (const words of english) expect(JSON.stringify(p)).not.toContain(words)
+  w.deny = 'locked by policy'
+  expect((await act($, { id: 'config:column', value: 'size' })).message).toBe('Coluna da direita não mudou: locked by policy')
+})
+
+test('the open action opens and focuses the pane, close closes it and keeps it closed', { timeoutMs: 20_000, options: { start: 'off' }, plugins: [HUB] }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const w: World = { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']], '/home/k/other': [['b.ts', 'file']] }, status: '', numstat: '' }
+  const clock = world(on, w, ran)
+  const mods: Mods = { panes: [], rows: ROWS, sets: [] }
+  modsWorld(on, mods)
+  on('classic.CwdChanged', () => ({}))
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const before = opens.length
+  expect(await act($, { id: 'open' })).toEqual({})
+  await clock.settle()
+  expect(opens.slice(before)).toContainEqual(expect.objectContaining({ id: 'filetree', focus: true }))
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(await texts(ui)).toContain(`"id":"${root}/a.ts"`)
+  await ui.unmount()
+  mods.panes = ['filetree']
+  expect(await act($, { id: 'close' })).toEqual({})
+  expect(mods.panes).toEqual([])
+  const after = opens.length
+  w.cwd = '/home/k/other'
+  await $.classic.CwdChanged({ old_cwd: root, new_cwd: w.cwd } as any)
+  await clock.settle()
+  expect(opens.length).toBe(after)
+  expect((await act($, { id: 'nope' })).message).toContain('nope')
+})
+
+test('a setting changed in the tab is written to its userConfig field', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
+  const w: Mods = { panes: [], rows: ROWS, sets: [] }
+  modsWorld(on, w)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(await act($, { id: 'config:column', value: 'size' })).toEqual({})
+  expect(await act($, { id: 'config:open', value: ' preview ' })).toEqual({})
+  expect(w.sets).toEqual([{ key: 'filetree.column', value: 'size' }, { key: 'filetree.open', value: 'preview' }])
+  expect((await act($, { id: 'config:column', value: 'colour' })).message).toContain('not an option')
+  expect(w.sets).toHaveLength(2)
+})
+
+test('no /filetree slash command is registered', { timeoutMs: 20_000 }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
+  registered.length = 0
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(registered.some((e: any) => e?.name === 'filetree')).toBe(false)
+})
