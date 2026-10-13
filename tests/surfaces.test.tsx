@@ -470,10 +470,10 @@ test('watches only git metadata, copies paths, clears search, Home and End', { t
   expect(copied).toEqual(['b.txt', `${root}/b.txt`])
   await ui.input({ key: 'q', text: 'b', kind: 'change' })
   await clock.settle()
-  expect(await ui.find({ key: 'clear' })).toBeDefined()
+  expect(await ui.find({ key: 'button-clear' })).toBeDefined()
   await ui.press({ key: 'clear' })
   await clock.settle()
-  expect(await ui.find({ key: 'clear' })).toBeUndefined()
+  expect(await ui.find({ key: 'button-clear' })).toBeUndefined()
   await ui.post({ key: 'end' }, { in: 'rows' })
   await clock.settle()
   const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props

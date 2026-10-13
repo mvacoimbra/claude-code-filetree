@@ -1042,6 +1042,14 @@ async function pressHeader($: EngineInterface, id: string): Promise<void> {
   else if (id === 'collapse') await patch($, cur => ({ expanded: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))
   else if (id === 'unselect') await patch($, () => ({ selected: '' }))
   else if (id === 'external' && t.preview) await openFile($, t.preview, true)
+  else if (id === 'back') {
+    // The button is gone once pressed, so no leave arrives for it.
+    hovered = ''
+    await closePreview($)
+  } else if (id === 'clear') {
+    hovered = ''
+    await search($, '')
+  }
 }
 
 function shortPath(path: string): string {
@@ -1322,7 +1330,7 @@ export const register: Register = (on, options) => {
       return <Empty />
     }
     const unicode = glyphSetting === 'plain' || (glyphSetting === 'auto' && (noNerd || e.surface === 'desktop'))
-    const { Box, Text, Button, Input, Client } = $.ui.resolve(e)
+    const { Box, Text, Input, Client } = $.ui.resolve(e)
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
@@ -1345,16 +1353,17 @@ export const register: Register = (on, options) => {
       previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 2 : 1))
       const win = previewLines(p?.text ?? '', nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows)), previewRows, markdown)
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
+      const back = { id: 'back', label: unicode ? '← files' : '\u{f004d} files', dim: false, hint: 'back to the tree' }
       const external = { id: 'external', label: unicode ? '↗' : '\u{f08e}', dim: true, hint: 'open in default app' }
       return (
         <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
           <Box flexDirection="row">
-            <Button key="back" plain label={unicode ? '← files' : '\u{f004d} files'} onPress={() => void closePreview($)} />
+            {button(back)}
             <Text> </Text>
             <Box flexShrink={1} flexGrow={1}>
               <Text bold wrap="truncate-start">{name}</Text>
             </Box>
-            {hint([external], 8 + name.length)}
+            {hint([back, external], 8 + name.length)}
             {button(external)}
           </Box>
           {p?.note ? <Text dimColor>{p.note}</Text> : null}
@@ -1416,6 +1425,7 @@ export const register: Register = (on, options) => {
       { id: 'collapse', label: unicode ? '⊟' : '\u{eac5}', dim: true, hint: 'collapse all' },
       ...(t.selected ? [{ id: 'unselect', label: unicode ? '⊘' : '\u{f0777}', dim: false, hint: 'clear selection' }] : []),
     ]
+    const clear = { id: 'clear', label: unicode ? '×' : '\u{f0156}', dim: true, hint: 'clear search' }
     const header = t.top ? [t.top.split('/').pop() ?? t.top, t.prefix.replace(/\/$/, '')].filter(Boolean).join('/') : t.root.split('/').pop() || t.root
 
     const rowSpec = (r: (typeof rows)[number]): RowSpec => {
@@ -1568,7 +1578,8 @@ export const register: Register = (on, options) => {
               onSubmit={(v: string) => void jump($, v)}
             />
           </Box>
-          {t.query ? <Button key="clear" plain dimColor label={unicode ? '×' : '\u{f0156}'} onPress={() => void search($, '')} /> : null}
+          {t.query ? hint([clear], 2 + t.query.length) : null}
+          {t.query ? button(clear) : null}
         </Box>
         <Client
           key="rows"
