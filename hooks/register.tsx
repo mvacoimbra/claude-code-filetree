@@ -3,11 +3,39 @@ import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 import type { ButtonProps } from './button'
 
 import type { Activity, FileNode, FileTree, FiletreeActArgs, FiletreeActResult, FiletreeItem, FiletreeLang, FiletreePanel, FiletreePanelArgs, Theme } from '../types'
-import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
-import type { RowSpec, RowsProps, Seg } from './rows'
-import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
+import { chainOf, type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
+import type { RowsProps } from './rows'
+import type { RowSpec } from './paint'
+import { cutNote } from './paint'
 import {
-  age,
+  backButton,
+  BRANCH_ROW,
+  clearButton,
+  countSegs,
+  drawBranchRow,
+  drawChip,
+  drawFooter,
+  drawFrame,
+  drawHeader,
+  drawHint,
+  drawNoRepo,
+  drawPreviewHeader,
+  drawPreviewNote,
+  drawSearchRow,
+  EMPTY_NOTE,
+  externalButton,
+  faint,
+  type HeaderButton,
+  headerButtons,
+  metaOf,
+  nodeRow,
+  noteRow,
+  PINNED_GAP,
+  SEARCH,
+  SHIMMER,
+  hintFor,
+} from './look'
+import {
   ancestorsOf,
   type Change,
   DEFAULT_THEME,
@@ -28,7 +56,6 @@ import {
   rollCounts,
   replaceChildren,
   rollUp,
-  stamp,
   toNodes,
   underAny,
   visibleRows,
@@ -38,8 +65,6 @@ const TREE = { plugin: 'filetree', key: 'tree' } as const
 const THEME = { plugin: 'filetree', key: 'theme' } as const
 const ACTIVITY = { plugin: 'filetree', key: 'activity' } as const
 const PANE = 'filetree'
-const SHIMMER = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
-const BRANCH_ROW = '#branch'
 const FLASH_MS = 2700
 const RUNNING_MAX_MS = 600_000
 const NO_REPO_DEPTH = 4
@@ -49,8 +74,6 @@ const ROWS_BUDGET = 80_000
 const READ_REVEAL_LIMIT = 12
 const SEARCH_REVEAL_LIMIT = 60
 const ACTIVITY_TTL_MS = 45_000
-const ADD_COLOR = '#98c379'
-const DEL_COLOR = '#e06c75'
 const THEME_FILE = '.local/state/omarchy/current/theme/colors.toml'
 const THEME_POLL_MS = 2000
 const FONT_SCRIPT =
@@ -133,15 +156,10 @@ async function cwdOf($: EngineInterface): Promise<string> {
   return posix(await $.session.cwd())
 }
 
-function clean(segs: Seg[]): Seg[] {
-  for (const seg of segs) for (const k of Object.keys(seg) as (keyof Seg)[]) if (seg[k] === undefined) delete seg[k]
-  return segs
-}
-
-function faint(hex: string): string {
-  const v = parseInt(hex.slice(1), 16)
-  const ch = (shift: number) => Math.round(0x26 + (((v >> shift) & 255) - 0x26) * 0.3)
-  return `#${[16, 8, 0].map(x => ch(x).toString(16).padStart(2, '0')).join('')}`
+// Plain Unicode glyphs in place of Nerd Font icons: the Glyphs setting, and on auto the desktop
+// app or a terminal with no Nerd Font.
+function unicodeOn(surface: string): boolean {
+  return glyphSetting === 'plain' || (glyphSetting === 'auto' && (noNerd || surface === 'desktop'))
 }
 
 async function get($: EngineInterface): Promise<FileTree> {
@@ -1556,22 +1574,19 @@ export const register: Register = (on, options) => {
       const { Box: Empty } = $.ui.resolve(e)
       return <Empty />
     }
-    const unicode = glyphSetting === 'plain' || (glyphSetting === 'auto' && (noNerd || e.surface === 'desktop'))
+    const unicode = unicodeOn(e.surface)
     const { Box, Text, Input, Client } = $.ui.resolve(e)
+    const els = { Box, Text }
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
     // there it draws every row and lets the engine scroll the body.
     nativeScroll = e.surface === 'desktop'
-    const button = (b: ButtonProps) => <Client key={`button-${b.id}`} module="./button.tsx" props={{ id: b.id, label: b.label, dim: b.dim } satisfies ButtonProps} />
+    const bodyRows = e.props.scroll?.bodyRows ?? 1
+    const button = (b: HeaderButton) => <Client key={`button-${b.id}`} module="./button.tsx" props={{ id: b.id, label: b.label, dim: b.dim } satisfies ButtonProps} />
     // What the hovered header button does, left of the buttons, when it fits beside a title that
     // long; the buttons are Clients only so that they can say when the pointer is over them.
-    const hint = (buttons: { id: string; hint: string }[], title: number) => {
-      const text = buttons.find(b => b.id === hovered)?.hint
-      if (!text) return null
-      const room = e.props.bodyColumns - title - buttons.length * (e.surface === 'desktop' ? 3 : 2) - 2
-      return text.length <= room ? <Text color={theme.muted}>{`${text} `}</Text> : null
-    }
+    const hint = (buttons: HeaderButton[], title: number) => drawHint(els, hintFor(buttons, hovered, e.props.bodyColumns, title, e.surface), theme)
     if (t.preview) {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
@@ -1580,27 +1595,17 @@ export const register: Register = (on, options) => {
       previewRows = nativeScroll ? all : Math.max(4, (e.props.scroll?.bodyRows ?? 40) - (p?.note ? 2 : 1))
       const win = previewLines(p?.text ?? '', nativeScroll ? 0 : Math.min(t.previewTop, Math.max(0, all - previewRows)), previewRows, markdown)
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
-      const back = { id: 'back', label: unicode ? '← files' : '\u{f004d} files', dim: false, hint: 'back to the tree' }
-      const external = { id: 'external', label: unicode ? '↗' : '\u{f08e}', dim: true, hint: 'open in default app' }
-      return (
-        <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
-          <Box flexDirection="row">
-            {button(back)}
-            <Text> </Text>
-            <Box flexShrink={1} flexGrow={1}>
-              <Text bold wrap="truncate-start">{name}</Text>
-            </Box>
-            {hint([back, external], 8 + name.length)}
-            {button(external)}
-          </Box>
-          {p?.note ? <Text dimColor>{p.note}</Text> : null}
-          <Client
-            key="rows"
-            module="./rows.tsx"
-            props={{ rows: [], active: '', activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
-          />
-        </Box>
-      )
+      const back = backButton(unicode)
+      const external = externalButton(unicode)
+      return drawFrame(els, bodyRows, theme, [
+        drawPreviewHeader(els, button(back), name, hint([back, external], 8 + name.length), button(external)),
+        p?.note ? drawPreviewNote(els, p.note) : null,
+        <Client
+          key="rows"
+          module="./rows.tsx"
+          props={{ rows: [], active: '', activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
+        />,
+      ])
     }
     const now = await $.clock.now()
     const live = (await activities($)).filter(a => now - a.at < (a.state === 'running' ? RUNNING_MAX_MS : ACTIVITY_TTL_MS))
@@ -1634,90 +1639,47 @@ export const register: Register = (on, options) => {
     const shown = rows.slice(from, from + room - pinned.length)
     if (t.showSize) wantSizes($, [...pinned, ...shown].filter(r => r.node.kind === 'dir' && !(r.node.id in t.dirSizes)).map(r => r.node.id))
     const totals: [number, number] = t.top ? (t.diff[t.root] ?? [0, 0]) : [0, 0]
-    const countSegs = (c: [number, number, number] | undefined): Seg[] => {
-      if (!c) return []
-      const out: Seg[] = []
-      if (c[0] > 0) out.push({ t: ` ?:${c[0]}`, c: GIT_COLOR['?'] ?? ADD_COLOR })
-      if (c[1] > 0) out.push({ t: ` M:${c[1]}`, c: GIT_COLOR.M ?? '#e5c07b' })
-      if (c[2] > 0) out.push({ t: ` D:${c[2]}`, c: theme.urgent })
-      return out
-    }
-    const rootCounts = t.top ? countSegs(t.counts[t.root]) : []
-    const buttons = [
-      { id: 'up', label: unicode ? '↑' : '\u{f005d}', dim: true, hint: 'parent folder' },
-      { id: 'cwd', label: unicode ? '⌂' : '\u{f02dc}', dim: !follow, hint: 'follow the cwd' },
-      { id: 'refresh', label: unicode ? '↻' : '\u{f0450}', dim: true, hint: 'reload tree and git' },
-      { id: 'hidden', label: unicode ? (t.showHidden ? '◉' : '○') : t.showHidden ? '\u{f0208}' : '\u{f0209}', dim: !t.showHidden, hint: t.showHidden ? 'hide hidden files' : 'show hidden files' },
-      { id: 'size', label: unicode ? 'Σ' : '\u{f02ca}', dim: !t.showSize, hint: t.showSize ? 'show dates' : 'show sizes' },
-      { id: 'collapse', label: unicode ? '⊟' : '\u{eac5}', dim: true, hint: 'collapse all' },
-      ...(t.selected ? [{ id: 'unselect', label: unicode ? '⊘' : '\u{f0777}', dim: false, hint: 'clear selection' }] : []),
-    ]
-    const clear = { id: 'clear', label: unicode ? '×' : '\u{f0156}', dim: true, hint: 'clear search' }
+    const rootCounts = t.top ? countSegs(t.counts[t.root], theme) : []
+    const buttons = headerButtons(unicode, { follow, showHidden: t.showHidden, showSize: t.showSize, selected: Boolean(t.selected) })
+    const clear = clearButton(unicode)
     const header = t.top ? [t.top.split('/').pop() ?? t.top, t.prefix.replace(/\/$/, '')].filter(Boolean).join('/') : t.root.split('/').pop() || t.root
 
     const rowSpec = (r: (typeof rows)[number]): RowSpec => {
       const n = r.node
-      const own = t.git[n.id]
-      const status = own ?? (underAny(dirname(n.id), untracked, t.root) ? '?' : undefined)
-      const isIgnored = !status && underAny(n.id, ignored, t.root)
-      const gitColor = status === 'D' || status === 'U' ? theme.urgent : status ? (GIT_COLOR[status] ?? theme.muted) : undefined
+      const status = t.git[n.id] ?? (underAny(dirname(n.id), untracked, t.root) ? '?' : undefined)
       const isBright = bright.has(n.id)
-      const isDim = !isBright && dimmed.has(n.id)
-      const tone = t.flashTones[n.id] ?? 'orange'
-      const iconColor = isIgnored ? theme.muted : (gitColor ?? (n.hidden ? theme.muted : n.kind === 'dir' ? theme.accent : theme.muted))
-      const nameColor = isIgnored ? theme.muted : (gitColor ?? (n.hidden ? theme.muted : theme.fg || undefined))
       const loc = t.diff[n.id]
-      const meta = t.showSize
-        ? n.kind === 'dir'
-          ? n.id in t.dirSizes
-            ? formatSize(t.dirSizes[n.id] ?? -1)
-            : '…'
-          : n.kind === 'file' || (n.kind === 'link' && n.size > 0)
-            ? formatSize(n.size)
-            : ''
-        : loc
-          ? ''
-          : n.kind === 'file'
-            ? showAge
-              ? age(n.mtime, now)
-              : stamp(n.mtime)
-            : ''
-      const locText = loc ? `${loc[0] ? ` +${loc[0]}` : ''}${loc[1] ? ` -${loc[1]}` : ''}` : ''
-      const dirCounts = n.kind === 'dir' ? countSegs(t.counts[n.id]) : []
-      const badge = dirCounts.length ? '' : status ? ` ${status}` : isIgnored ? (unicode ? ' ⊘' : ' \u{f05e}') : '  '
-      const countsText = dirCounts.map(c => c.t).join('')
-      const cols = Math.max(4, width - r.depth * 2 - 6 - (meta ? meta.length + 1 : 0) - locText.length - badge.length - countsText.length)
-      const name = n.name.length > cols ? n.name.slice(0, cols - 1) + '…' : n.name
-      const caret = n.kind === 'dir' ? (unicode ? (r.open ? '▾' : '▸') : r.open ? CHEVRON_OPEN : CHEVRON_CLOSED) + ' ' : '  '
-      const isRepo = n.kind === 'dir' && n.id === t.top
-      const glyph = unicode ? (n.kind === 'dir' ? '■' : '·') : fileIcon(n, r.open, isRepo)
-      const lit = isBright || isDim
-      const left: Seg[] = [
-        { t: '  '.repeat(r.depth) },
-        { t: caret, c: theme.muted },
-        lit ? { t: glyph + ' ', sh: tone, dim: isDim, one: true } : { t: glyph + ' ', c: iconColor },
-        lit ? { t: name, sh: tone, dim: isDim, b: isBright } : { t: name, c: nameColor, b: n.id === t.selected, s: status === 'D' && n.kind !== 'dir' },
-      ]
-      const right: Seg[] = []
-      if (meta) right.push({ t: ` ${meta}`, c: theme.muted })
-      if (loc && loc[0] > 0) right.push({ t: ` +${loc[0]}`, c: ADD_COLOR })
-      if (loc && loc[1] > 0) right.push({ t: ` -${loc[1]}`, c: DEL_COLOR })
-      right.push(...dirCounts)
-      if (badge) right.push({ t: badge, c: status ? gitColor : theme.muted, b: true })
-      return { id: n.id, left: clean(left), right: clean(right) }
+      return nodeRow({
+        node: n,
+        depth: r.depth,
+        open: r.open,
+        status,
+        isIgnored: !status && underAny(n.id, ignored, t.root),
+        isBright,
+        isDim: !isBright && dimmed.has(n.id),
+        tone: t.flashTones[n.id] ?? 'orange',
+        loc,
+        counts: t.counts[n.id],
+        meta: metaOf(n, { showSize: t.showSize, dirSizes: t.dirSizes, loc, showAge, now }),
+        selected: n.id === t.selected,
+        isRepo: n.kind === 'dir' && n.id === t.top,
+        unicode,
+        theme,
+        width,
+      })
     }
 
-    const note = (text: string): RowSpec => ({ id: '', left: [{ t: text, c: theme.muted }], right: [] })
+    const note = (text: string): RowSpec => noteRow(text, theme)
     const specs: RowSpec[] = [
-      ...(rows.length === 0 ? [note('empty')] : []),
+      ...(rows.length === 0 ? [note(EMPTY_NOTE)] : []),
       ...pinned.map(rowSpec),
-      ...(pinned.length > 0 ? [note('  ⋮')] : []),
+      ...(pinned.length > 0 ? [note(PINNED_GAP)] : []),
       ...shown.map(rowSpec),
     ]
     if (nativeScroll) {
       let size = 0
       const cut = specs.findIndex(r => (size += JSON.stringify(r).length + 1) > ROWS_BUDGET)
-      if (cut >= 0) specs.splice(cut, specs.length - cut, note(`  … ${specs.length - cut} more rows, collapse folders or use search`))
+      if (cut >= 0) specs.splice(cut, specs.length - cut, note(cutNote(specs.length - cut)))
     }
     const barSize = Math.max(1, Math.round((specs.length * shown.length) / Math.max(1, rows.length)))
     const bar =
@@ -1725,109 +1687,29 @@ export const register: Register = (on, options) => {
         ? { pos: max ? Math.round((from / max) * (specs.length - barSize)) : 0, size: barSize, thumb: theme.accent, track: theme.muted }
         : undefined
 
-    const branchRow = () => {
-      if (!t.top || !t.branch) return null
-      const b = t.branch
-      const isFlash = bright.has(BRANCH_ROW)
-      const tone = t.flashTones[BRANCH_ROW] ?? 'teal'
-      const label = b.head
-      return (
-        <Box flexDirection="row" height={1} overflow="hidden">
-          <Box flexDirection="row" flexShrink={0}>
-            <Text color={isFlash ? (TONES[tone]?.solid ?? theme.accent) : theme.accent}>{(unicode ? BRANCH_ICON.plain : BRANCH_ICON.nerd) + ' '}</Text>
-            <Text bold color={isFlash ? (TONES[tone]?.solid ?? (theme.fg || undefined)) : theme.fg || undefined}>
-              {label}
-            </Text>
-            {b.ahead > 0 && <Text color={TONES.teal?.solid}>{` ↑${b.ahead}`}</Text>}
-            {b.behind > 0 && <Text color={TONES.blue?.solid}>{` ↓${b.behind}`}</Text>}
-          </Box>
-          {b.upstream && (
-            <Box flexShrink={1} overflow="hidden">
-              <Text color={theme.muted} wrap="truncate-end">
-                {` ${b.upstream}`}
-              </Text>
-            </Box>
-          )}
-          <Box flexGrow={1} />
-          <Box flexDirection="row" flexShrink={0}>
-            {totals[0] > 0 && <Text color={ADD_COLOR}>{` +${totals[0]}`}</Text>}
-            {totals[1] > 0 && <Text color={DEL_COLOR}>{` -${totals[1]}`}</Text>}
-            {rootCounts.map(c => (
-              <Text color={c.c}>{c.t}</Text>
-            ))}
-            {rootCounts.length === 0 && totals[0] === 0 && totals[1] === 0 && <Text color={theme.muted}> clean</Text>}
-          </Box>
-        </Box>
-      )
-    }
+    const branchRow = () =>
+      t.top && t.branch
+        ? drawBranchRow(els, { branch: t.branch, ...(bright.has(BRANCH_ROW) ? { flashTone: t.flashTones[BRANCH_ROW] ?? 'teal' } : {}), totals, rootCounts, unicode, theme })
+        : null
+    const selectedPath = t.selected ? (t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)) : ''
 
-    const chip = (a: Activity) => {
-      const tone = a.state === 'failed' ? 'red' : a.tone
-      const color = TONES[tone]?.solid ?? theme.accent
-      const icon = unicode ? a.plain : a.nerd
-      const hash = a.state === 'done' && a.kind === 'git commit' ? a.detail.split(' ')[0] ?? '' : ''
-      return (
-        <Box flexDirection="row" marginLeft={2}>
-          <Text color={color}>{icon + ' '}</Text>
-          <Text bold={a.state === 'running'} color={color}>
-            {a.state === 'running' ? `${a.label}…` : a.label}
-          </Text>
-          {hash && <Text color={theme.muted}>{` ${hash}`}</Text>}
-        </Box>
-      )
-    }
-
-    return (
-      <Box flexDirection="column" minHeight={Math.max(1, e.props.scroll?.bodyRows ?? 1)} backgroundColor={theme.bg || undefined}>
-        <Box flexDirection="row">
-          <Text bold color={theme.accent} wrap="truncate-start">
-            {header}
-          </Text>
-          <Box flexGrow={1} />
-          {hint(buttons, header.length)}
-          <Box flexDirection="row" gap={1}>
-            {buttons.map(button)}
-            <Text> </Text>
-          </Box>
-        </Box>
-        {branchRow()}
-        {!t.top && showHints && <Text color={theme.muted}>{unicode ? '± ' : '\u{e702} '}no git repo · git status starts after git init</Text>}
-        <Box flexDirection="row">
-          <Box flexGrow={1}>
-            <Input
-              key="q"
-              label="/ "
-              placeholder="search"
-              submitLabel="jump"
-              autoFocus
-              value={t.query}
-              onInput={(v: string) => void search($, v)}
-              onSubmit={(v: string) => void jump($, v)}
-            />
-          </Box>
-          {t.query ? hint([clear], 2 + t.query.length) : null}
-          {t.query ? button(clear) : null}
-        </Box>
-        <Client
-          key="rows"
-          module="./rows.tsx"
-          props={{ rows: specs, active: t.cursor, activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
-        />
-        <Box flexGrow={1} />
-        {(t.selected || latest) && (
-          <Box flexDirection="row">
-            {t.selected ? (
-              <Box flexShrink={1}>
-                <Text dimColor wrap="truncate-start">
-                  selected: {t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)}
-                </Text>
-              </Box>
-            ) : null}
-            <Box flexGrow={1} />
-            {latest && chip(latest)}
-          </Box>
-        )}
-      </Box>
-    )
+    return drawFrame(els, bodyRows, theme, [
+      drawHeader(els, header, theme, hint(buttons, header.length), buttons.map(button)),
+      branchRow(),
+      !t.top && showHints && drawNoRepo(els, unicode, theme),
+      drawSearchRow(els, {
+        query: t.query,
+        field: <Input key="q" label={SEARCH.label} placeholder={SEARCH.placeholder} submitLabel={SEARCH.submitLabel} autoFocus value={t.query} onInput={(v: string) => void search($, v)} onSubmit={(v: string) => void jump($, v)} />,
+        hint: t.query ? hint([clear], 2 + t.query.length) : null,
+        clear: t.query ? button(clear) : null,
+      }),
+      <Client
+        key="rows"
+        module="./rows.tsx"
+        props={{ rows: specs, active: t.cursor, activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
+      />,
+      <Box flexGrow={1} />,
+      t.selected || latest ? drawFooter(els, selectedPath, latest ? drawChip(els, latest, unicode, theme) : null) : null,
+    ])
   })
 }

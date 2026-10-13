@@ -1,30 +1,23 @@
 import type { ClientModule, RenderElement } from 'claude-code'
+import { type Bar, cutNote, FRAMES, paintPreview, paintRow, type Preview, type RowSpec, type Tones } from './paint'
 
-export type Seg = { t: string; c?: string; b?: boolean; s?: boolean; i?: boolean; sh?: string; dim?: boolean; one?: boolean; spin?: boolean; bg?: string; tab?: string }
-export type RowSpec = { id: string; left: Seg[]; right: Seg[] }
+export type { RowSpec, Seg } from './paint'
 export type RowsProps = {
   rows: RowSpec[]
   active: string
   activeBg: string
   hoverBg: string
-  tones: Record<string, { bright: string[]; dim: string[] }>
+  tones: Tones
   spinner?: string[]
   pointer?: boolean
-  bar?: { pos: number; size: number; thumb: string; track: string }
-  preview?: { text: string; path: string; startLine: number; markdown: boolean }
+  bar?: Bar
+  preview?: Preview
 }
 type Local = { hover: number; phase: number; drag: boolean; ref: { stop?: () => void; unpoint?: () => void } }
 
 const TICK_MS = 90
 const TREE_BUDGET = 70_000
 const MAX_ROWS = 1_500
-const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
-function shimmer(i: number, phase: number, len: number, palette: string[]): string {
-  const band = ((phase * 1.6) % (len + 8)) - 4
-  const d = Math.abs(i - band)
-  return palette[d < 0.8 ? 3 : d < 1.8 ? 2 : d < 2.8 ? 1 : 0] ?? palette[0] ?? '#f97316'
-}
 
 const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
   const { Box, Text } = surface.elements
@@ -86,63 +79,19 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
   })
   surface.onKey(e => surface.post({ key: e.key, ctrl: Boolean(e.ctrl), shift: Boolean(e.shift) }))
   // The preview draws in this same element, so the focus a click gave the tree stays put.
-  if (props.preview) {
-    const { Markdown, Code } = surface.elements
-    const p = props.preview
-    return p.markdown ? <Markdown text={p.text} /> : <Code source={p.text} path={p.path} startLine={p.startLine} wrap="truncate-end" />
-  }
+  if (props.preview) return paintPreview(surface.elements, props.preview)
   const frames = props.spinner?.length ? props.spinner : FRAMES
-  const draw = (s: Seg) => {
-    if (s.spin) {
-      return (
-        <Text color={s.c} bold={s.b}>
-          {s.t + (frames[state.phase % frames.length] ?? '')}
-        </Text>
-      )
-    }
-    const palette = s.sh ? (s.dim ? props.tones[s.sh]?.dim : props.tones[s.sh]?.bright) : undefined
-    if (!palette) {
-      return (
-        <Text color={s.c} backgroundColor={s.bg} bold={s.b} strikethrough={s.s} italic={s.i}>
-          {s.t}
-        </Text>
-      )
-    }
-    if (s.one) {
-      return (
-        <Text color={shimmer(-1, state.phase, s.t.length, palette)}>
-          {s.t}
-        </Text>
-      )
-    }
-    const chars = [...s.t]
-    return (
-      <Text bold={s.b}>
-        {chars.map((ch, i) => (
-          <Text color={shimmer(i, state.phase, chars.length, palette)}>{ch}</Text>
-        ))}
-      </Text>
-    )
+  const bar = props.bar
+  const rowEl = (r: RowSpec, i: number) => {
+    const thumb = Boolean(bar) && i >= (bar?.pos ?? 0) && i < (bar?.pos ?? 0) + (bar?.size ?? 0)
+    return paintRow(surface.elements, r, {
+      bg: r.id && r.id === props.active ? props.activeBg : r.id && i === state.hover ? props.hoverBg : undefined,
+      phase: state.phase,
+      tones: props.tones,
+      frames,
+      ...(bar ? { bar: { thumb, color: thumb ? bar.thumb : bar.track } } : {}),
+    })
   }
-  const rowEl = (r: RowSpec, i: number) => (
-    <Box
-      flexDirection="row"
-      height={1}
-      overflow="hidden"
-      backgroundColor={r.id && r.id === props.active ? props.activeBg : r.id && i === state.hover ? props.hoverBg : undefined}
-    >
-      <Box flexShrink={1} overflow="hidden">
-        {r.left.map(draw)}
-      </Box>
-      <Box flexGrow={1} />
-      {r.right.map(draw)}
-      {props.bar && (
-        <Text color={i >= props.bar.pos && i < props.bar.pos + props.bar.size ? props.bar.thumb : props.bar.track}>
-          {i >= props.bar.pos && i < props.bar.pos + props.bar.size ? '┃' : '│'}
-        </Text>
-      )}
-    </Box>
-  )
   const drawn: RenderElement[] = []
   let size = 0
   for (let i = 0; i < props.rows.length; i++) {
@@ -153,7 +102,7 @@ const Rows: ClientModule<RowsProps, Local> = (props, surface) => {
     } catch {}
     if (size + cost > TREE_BUDGET || drawn.length >= MAX_ROWS) {
       visible = i
-      drawn.push(<Text dimColor>{`  … ${props.rows.length - i} more rows, collapse folders or use search`}</Text>)
+      drawn.push(<Text dimColor>{cutNote(props.rows.length - i)}</Text>)
       break
     }
     size += cost
