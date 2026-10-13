@@ -64,7 +64,42 @@ export type Theme = {
   bg: string
 }
 
+// `$.filetree`: the tab the /mods hub draws for this mod (the mods panel protocol).
+export type FiletreeLang = 'en' | 'pt'
+export type FiletreePanelArgs = { lang: FiletreeLang; surface: 'terminal' | 'desktop' | 'vscode' | 'mobile'; columns: number }
+export type FiletreeTone = 'ok' | 'warn' | 'err' | 'muted' | 'accent'
+export type FiletreeItem =
+  | { kind: 'toggle'; id: string; label: string; help?: string; value: boolean }
+  | { kind: 'choice'; id: string; label: string; help?: string; value: string; options: { value: string; label: string }[] }
+  | { kind: 'action'; id: string; label: string; help?: string; primary?: boolean }
+  | { kind: 'input'; id: string; label: string; help?: string; placeholder?: string; submitLabel?: string }
+  | { kind: 'info'; label: string; value: string; tone?: FiletreeTone }
+  | { kind: 'text'; text: string; tone?: FiletreeTone }
+  | { kind: 'swatch'; id: string; label: string; color: string; selected: boolean }
+  | { kind: 'tree'; tree: unknown }
+export type FiletreeSection = { id: string; title: string; items: FiletreeItem[] }
+export type FiletreePanel = {
+  // The tab's name.
+  title: string
+  // One line for the overview and under the tab row.
+  summary?: string
+  tone?: FiletreeTone
+  // Drawn as sub-tabs when there is more than one.
+  sections: FiletreeSection[]
+  // While this tab shows, the hub draws it again this often (a countdown).
+  refreshMs?: number
+}
+export type FiletreeActArgs = { id: string; value?: string }
+export type FiletreeActResult = { message?: string }
+
 declare module 'claude-code' {
+  interface EngineInterface {
+    filetree: {
+      panel: (args: FiletreePanelArgs) => Promise<FiletreePanel>
+      act: (args: FiletreeActArgs) => Promise<FiletreeActResult>
+    }
+  }
+
   interface PluginState {
     filetree: {
       tree: FileTree

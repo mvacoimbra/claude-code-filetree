@@ -50,7 +50,7 @@
     "start": {
       "type": "string",
       "title": "Open at start",
-      "description": "on: the pane opens when a session starts. off: it stays closed until you run /filetree.",
+      "description": "on: the pane opens when a session starts. off: it stays closed until you open it from /mods.",
       "default": "on",
       "options": [
         "on",

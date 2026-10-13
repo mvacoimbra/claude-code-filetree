@@ -1,7 +1,26 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine, Plugin } from 'claude-code/testing'
 
 import { LINUX_LAUNCH } from '../hooks/open'
 import { age, ancestorsOf, formatSize, replaceChildren, toNodes } from '../hooks/tree'
+import type { FiletreeActArgs, FiletreeActResult, FiletreePanel, FiletreePanelArgs } from '../types'
+
+// The host lets only a module call another plugin's noun, so a stand-in for the /mods hub
+// calls `$.filetree` from two commands of its own and hands back JSON.
+const HUB: Plugin = {
+  name: 'hub',
+  register(on) {
+    on('command.run', { command: 'hub-panel' }, async ($, e) => ({ text: JSON.stringify(await $.filetree.panel(JSON.parse(e.args))) }))
+    on('command.run', { command: 'hub-act' }, async ($, e) => ({ text: JSON.stringify(await $.filetree.act(JSON.parse(e.args))) }))
+  },
+}
+
+async function hub($: Engine, command: string, args: unknown) {
+  return JSON.parse((await $.command.run({ command, args: JSON.stringify(args) } as never)).text ?? '')
+}
+
+const panelOf = ($: Engine, args: Partial<FiletreePanelArgs> = {}): Promise<FiletreePanel> => hub($, 'hub-panel', { lang: 'en', surface: 'terminal', columns: 80, ...args })
+const act = ($: Engine, args: FiletreeActArgs): Promise<FiletreeActResult> => hub($, 'hub-act', args)
 
 type World = {
   os: 'darwin' | 'linux' | 'win32'
@@ -26,6 +45,7 @@ type World = {
 }
 type Ran = string[][]
 const opens: unknown[] = []
+const registered: unknown[] = []
 const envs: Record<string, string>[] = []
 
 function world(on: any, w: World, ran: Ran) {
@@ -35,7 +55,10 @@ function world(on: any, w: World, ran: Ran) {
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: 'test-session' }))
-  on('command.register', () => ({ value: undefined }))
+  on('command.register', (_$: any, e: any) => {
+    registered.push(e)
+    return { value: undefined }
+  })
   on('ui.open', (_$: any, e: any) => {
     opens.push(e)
     return { value: { isPlaced: true } }
@@ -521,7 +544,7 @@ test('watches only git metadata, copies paths, clears search, Home and End', { t
   await ui.unmount()
 })
 
-test('sidebar only: no pane in the default layout, and an inline pane closes itself', { timeoutMs: 20_000 }, async ($, on) => {
+test('sidebar only: no pane in the default layout, and an inline pane closes itself', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file']] }, status: '', numstat: '' }, ran)
@@ -533,17 +556,18 @@ test('sidebar only: no pane in the default layout, and an inline pane closes its
   })
   await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
   await clock.settle()
-  const before = opened.length
-  const r = await $.command.run({ command: 'filetree', args: '', origin: { kind: 'person' }, presentation: { isFullscreen: false, columns: 200 } } as any)
-  expect(JSON.stringify(r)).toContain('/tui fullscreen')
-  expect(opened.length).toBe(before)
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: { ...paneProps(60), placement: 'inline' } })
   await clock.settle()
   expect(closed.length).toBeGreaterThan(0)
   await ui.unmount()
+  const before = opened.length
+  const r = await act($, { id: 'open' })
+  expect(r.message).toContain('/tui fullscreen')
+  expect(r.message).toContain('/mods')
+  expect(opened.length).toBe(before)
 })
 
-test('in the desktop app /filetree opens the pane without the terminal layout checks', { timeoutMs: 20_000 }, async ($, on) => {
+test('in the desktop app the open action opens the pane without the terminal layout checks', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.txt', 'file']] }, status: '', numstat: '' }, ran)
@@ -551,17 +575,16 @@ test('in the desktop app /filetree opens the pane without the terminal layout ch
   await $.session.start({ cwd: root, surface: null, isInteractive: false })
   await clock.settle()
   const before = opens.length
-  const r = await $.command.run({ command: 'filetree', args: '', origin: { kind: 'sdk' }, presentation: { isFullscreen: false, columns: 80 } } as any)
+  const r = await act($, { id: 'open' })
   await clock.settle()
-  expect(JSON.stringify(r)).toContain('File tree on')
+  expect(r).toEqual({})
   expect(opens.length).toBeGreaterThan(before)
   expect(opens.at(-1)).toMatchObject({ id: 'filetree', focus: true })
 })
 
 const shimmer = (name: string, tone: string) => `"t":${JSON.stringify(name)},"sh":"${tone}"`
-const fullscreen = (args: string) => ({ command: 'filetree', args, origin: { kind: 'person' }, presentation: { isFullscreen: true, columns: 200 } }) as any
 
-test('after /clear the tree rebuilds itself, keeps a pinned folder, and an empty root never loops', { timeoutMs: 20_000 }, async ($, on) => {
+test('after /clear the tree rebuilds itself, keeps a pinned folder, and an empty root never loops', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file'], ['sub', 'dir']], [`${root}/sub`]: [['b.ts', 'file']] }, status: '', numstat: '' }, ran)
@@ -574,7 +597,7 @@ test('after /clear the tree rebuilds itself, keeps a pinned folder, and an empty
   await $.classic.SessionStart({ source: 'clear', cwd: root } as any)
   await clock.settle()
   expect(await texts(ui)).toContain(`"id":"${root}/a.ts"`)
-  await $.command.run(fullscreen(`${root}/sub`))
+  await act($, { id: 'folder', value: `${root}/sub` })
   await clock.settle()
   await $.classic.SessionStart({ source: 'clear', cwd: root } as any)
   await clock.settle()
@@ -851,7 +874,7 @@ test('a cwd change moves the tree and drops the old selection before the next pr
   await ui.unmount()
 })
 
-test('open at start off: no pane at start, on a cwd change or a prompt, until /filetree opens it', { timeoutMs: 20_000, options: { start: 'off' } }, async ($, on) => {
+test('open at start off: no pane at start, on a cwd change or a prompt, until the open action opens it', { timeoutMs: 20_000, options: { start: 'off' }, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const a = '/home/k/repo-a'
   const b = '/home/k/repo-b'
@@ -871,7 +894,7 @@ test('open at start off: no pane at start, on a cwd change or a prompt, until /f
   await $.session.start({ cwd: c, surface: 'terminal', isInteractive: true })
   await clock.settle()
   expect(opens.length).toBe(before)
-  await $.command.run(fullscreen(''))
+  await act($, { id: 'open' })
   await clock.settle()
   expect(opens.slice(before)).toContainEqual(expect.objectContaining({ id: 'filetree', focus: true }))
   const shown = opens.length
@@ -1006,14 +1029,16 @@ test('search matches relative paths, and a refresh or a click in the tree picks 
   await ui.unmount()
 })
 
-test('a pinned path with dot segments resolves to the same folder', { timeoutMs: 20_000 }, async ($, on) => {
+test('a pinned path with dot segments resolves to the same folder', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: '/home/k', top: '', dirs: { [root]: [['a.ts', 'file']], [`${root}/src`]: [] }, status: '', numstat: '' }, ran)
   await $.session.start({ cwd: '/home/k', surface: 'terminal', isInteractive: true })
   await clock.settle()
-  const r = await $.command.run(fullscreen(`${root}/./src/..`))
-  expect(JSON.stringify(r)).toContain('File tree on ~/proj.')
+  const r = await act($, { id: 'folder', value: `${root}/./src/..` })
+  expect(r).toEqual({})
+  const panel = await panelOf($)
+  expect(panel.summary?.startsWith('~/proj · ')).toBe(true)
 })
 
 test('a written file whose name holds a newline still shimmers', { timeoutMs: 20_000 }, async ($, on) => {

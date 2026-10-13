@@ -2,7 +2,7 @@ import { type BuiltinToolResults, type EngineInterface, type Register, type Time
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 import type { ButtonProps } from './button'
 
-import type { Activity, FileNode, FileTree, Theme } from '../types'
+import type { Activity, FileNode, FileTree, FiletreeActArgs, FiletreeActResult, FiletreeItem, FiletreeLang, FiletreePanel, FiletreePanelArgs, Theme } from '../types'
 import { BRANCH_ICON, chainOf, type GitAction, gitActions, readOnly, readTargets, resolve, TONES } from './git'
 import type { RowSpec, RowsProps, Seg } from './rows'
 import { CHEVRON_CLOSED, CHEVRON_OPEN, fileIcon, GIT_COLOR } from './icons'
@@ -96,6 +96,10 @@ let view = { from: 0, max: 0 }
 let nativeScroll = false
 let lastSync = 0
 let noDock = false
+// Set once a terminal drew the pane inline: the main-screen layout, fixed for the session.
+let inlineLayout = false
+// The language the /mods hub last drew this tab in; an act's toast speaks it.
+let hubLang: FiletreeLang = 'en'
 let home = ''
 let platform: Promise<'linux' | 'darwin' | 'win32'> | null = null
 let dirty: { root: string; files: Record<string, Change> } = { root: '', files: {} }
@@ -1056,6 +1060,235 @@ function shortPath(path: string): string {
   return home && inside(home, path) ? `~${path.slice(home.length)}` : path
 }
 
+type Words = { en: string; pt: string }
+type Field = { field: string; label: Words; help: Words; options?: string[]; fallback: string }
+
+// One row per `userConfig` field in plugin.json, in its order.
+const FIELDS: Field[] = [
+  {
+    field: 'activity',
+    label: { en: 'Claude activity', pt: 'Atividade do Claude' },
+    help: {
+      en: 'Which of Claude’s file activity shimmers in the tree: reads in purple, writes in orange, git in green',
+      pt: 'Qual atividade do Claude nos arquivos brilha na árvore: leituras em roxo, escritas em laranja, git em verde',
+    },
+    options: ['reads and writes', 'writes', 'reads', 'none'],
+    fallback: 'reads and writes',
+  },
+  {
+    field: 'glyphs',
+    label: { en: 'Glyphs', pt: 'Ícones' },
+    help: {
+      en: 'auto uses Nerd Font icons when one is installed, except in the desktop app; plain uses Unicode only',
+      pt: 'auto usa ícones Nerd Font quando há uma instalada, exceto no app desktop; plain usa só Unicode',
+    },
+    options: ['auto', 'nerd', 'plain'],
+    fallback: 'auto',
+  },
+  {
+    field: 'follow',
+    label: { en: 'Follow Claude', pt: 'Seguir o Claude' },
+    help: {
+      en: 'on: the tree scrolls to what Claude reads, writes or commits. off: only your own scrolling moves it',
+      pt: 'on: a árvore rola até o que o Claude lê, escreve ou commita. off: só a sua rolagem a move',
+    },
+    options: ['on', 'off'],
+    fallback: 'on',
+  },
+  {
+    field: 'start',
+    label: { en: 'Open at start', pt: 'Abrir ao iniciar' },
+    help: {
+      en: 'on: the pane opens when a session starts. off: it stays closed until you open it from /mods',
+      pt: 'on: o painel abre quando uma sessão começa. off: fica fechado até você abri-lo pelo /mods',
+    },
+    options: ['on', 'off'],
+    fallback: 'on',
+  },
+  {
+    field: 'column',
+    label: { en: 'Right column', pt: 'Coluna da direita' },
+    help: {
+      en: 'What the right column shows by default: date last modified, age since then, or size',
+      pt: 'O que a coluna da direita mostra por padrão: data da última modificação, idade desde então ou tamanho',
+    },
+    options: ['date', 'age', 'size'],
+    fallback: 'date',
+  },
+  {
+    field: 'hints',
+    label: { en: 'Hints', pt: 'Dicas' },
+    help: {
+      en: 'on: outside a git repo, a line under the header says git status starts after git init. off: hidden',
+      pt: 'on: fora de um repositório git, uma linha sob o cabeçalho diz que o status do git começa após git init. off: oculta',
+    },
+    options: ['on', 'off'],
+    fallback: 'on',
+  },
+  {
+    field: 'open',
+    label: { en: 'Open with', pt: 'Abrir com' },
+    help: {
+      en: 'What a double-click or Enter does with a file. Empty: the default app; preview: show it in the pane; anything else: a command, {path} the file and {dir} its folder',
+      pt: 'O que um duplo clique ou Enter faz com um arquivo. Vazio: o app padrão; preview: mostra no painel; qualquer outra coisa: um comando, {path} o arquivo e {dir} a pasta',
+    },
+    fallback: '',
+  },
+]
+
+const say = (lang: FiletreeLang, words: Words) => words[lang]
+
+async function paneIsOpen($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.ui.panes()).some(pane => pane.id === PANE)
+  } catch {
+    return false
+  }
+}
+
+async function configValues($: EngineInterface): Promise<Record<string, string>> {
+  const values: Record<string, string> = {}
+  let rows: Awaited<ReturnType<EngineInterface['config']['list']>> = []
+  try {
+    rows = await $.config.list()
+  } catch {
+    rows = []
+  }
+  for (const spec of FIELDS) {
+    const row = rows.find(r => r.key === `filetree.${spec.field}`)
+    values[spec.field] = row && typeof row.value === 'string' ? row.value : spec.fallback
+  }
+  return values
+}
+
+// `$.filetree.panel`: the Files tab of the /mods hub.
+async function panelOf($: EngineInterface, args: FiletreePanelArgs): Promise<FiletreePanel> {
+  const lang: FiletreeLang = args?.lang === 'pt' ? 'pt' : 'en'
+  hubLang = lang
+  const t = await get($)
+  const root = t.root || (await cwdOf($))
+  const isOpen = await paneIsOpen($)
+  const branch = t.branch?.head ?? ''
+  const summary = [
+    shortPath(root),
+    isOpen ? say(lang, { en: 'pane open', pt: 'painel aberto' }) : say(lang, { en: 'pane closed', pt: 'painel fechado' }),
+    branch ? `${say(lang, { en: 'branch', pt: 'branch' })} ${branch}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
+  const view: FiletreeItem[] = [
+    {
+      kind: 'action',
+      id: 'open',
+      label: say(lang, { en: 'Open the file tree', pt: 'Abrir a árvore de arquivos' }),
+      help: say(lang, {
+        en: 'Opens the pane on the working folder, which it follows, and gives it the keyboard',
+        pt: 'Abre o painel na pasta de trabalho, que ele acompanha, e passa o teclado para ele',
+      }),
+      primary: true,
+    },
+    {
+      kind: 'input',
+      id: 'folder',
+      label: say(lang, { en: 'Show a folder', pt: 'Mostrar uma pasta' }),
+      help: say(lang, {
+        en: 'Pins the tree to a folder, absolute or relative to the working folder, until you open the file tree again',
+        pt: 'Fixa a árvore numa pasta, absoluta ou relativa à pasta de trabalho, até você abrir a árvore de arquivos de novo',
+      }),
+      placeholder: '~/projects/app',
+      submitLabel: say(lang, { en: 'Show', pt: 'Mostrar' }),
+    },
+  ]
+  if (isOpen)
+    view.push({
+      kind: 'action',
+      id: 'close',
+      label: say(lang, { en: 'Close the file tree', pt: 'Fechar a árvore de arquivos' }),
+      help: say(lang, { en: 'It stays closed until you open it again', pt: 'Fica fechada até você abri-la de novo' }),
+    })
+
+  const values = await configValues($)
+  const settings: FiletreeItem[] = FIELDS.map(spec =>
+    spec.options
+      ? {
+          kind: 'choice' as const,
+          id: `config:${spec.field}`,
+          label: say(lang, spec.label),
+          help: say(lang, spec.help),
+          value: values[spec.field] ?? spec.fallback,
+          options: spec.options.map(value => ({ value, label: value })),
+        }
+      : {
+          kind: 'input' as const,
+          id: `config:${spec.field}`,
+          label: say(lang, spec.label),
+          help: `${say(lang, { en: 'Now', pt: 'Agora' })}: ${values[spec.field] || say(lang, { en: 'the default app', pt: 'o app padrão' })}. ${say(lang, spec.help)}`,
+          placeholder: 'preview',
+          submitLabel: say(lang, { en: 'Save', pt: 'Salvar' }),
+        },
+  )
+
+  return {
+    title: say(lang, { en: 'Files', pt: 'Arquivos' }),
+    summary,
+    tone: isOpen ? 'ok' : 'muted',
+    sections: [
+      { id: 'view', title: say(lang, { en: 'View', pt: 'Visualização' }), items: view },
+      { id: 'settings', title: say(lang, { en: 'Settings', pt: 'Ajustes' }), items: settings },
+    ],
+  }
+}
+
+const NEEDS_FULLSCREEN: Words = {
+  en: 'The file tree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then open it from /mods.',
+  pt: 'A árvore de arquivos aparece na barra lateral, que precisa do layout de tela cheia. Rode /tui fullscreen e abra-a pelo /mods.',
+}
+
+// Opens or focuses the pane on the cwd (followed), or pinned on `path`.
+async function openTree($: EngineInterface, path: string): Promise<FiletreeActResult> {
+  if (inlineLayout) return { message: say(hubLang, NEEDS_FULLSCREEN) }
+  noDock = false
+  const arg = path.trim()
+  const cwd = await cwdOf($)
+  follow = !arg
+  const root = arg ? resolve(cwd, arg, home) : cwd
+  await reset($, root, true)
+  return inlineLayout ? { message: say(hubLang, NEEDS_FULLSCREEN) } : {}
+}
+
+// `$.filetree.act`: a press in the Files tab. A message only when it failed.
+async function actOn($: EngineInterface, args: FiletreeActArgs): Promise<FiletreeActResult> {
+  const lang = hubLang
+  const id = typeof args?.id === 'string' ? args.id : ''
+  const value = typeof args?.value === 'string' ? args.value : ''
+  if (id === 'open' || id === 'folder') return openTree($, value)
+  if (id === 'close') {
+    noDock = true
+    try {
+      await $.ui.close({ id: PANE })
+    } catch (err) {
+      return { message: `${say(lang, { en: 'The file tree did not close', pt: 'A árvore de arquivos não fechou' })}: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    return {}
+  }
+  const spec = id.startsWith('config:') ? FIELDS.find(f => f.field === id.slice('config:'.length)) : undefined
+  if (spec) {
+    if (spec.options && !spec.options.includes(value)) {
+      return { message: say(lang, { en: `${value || '(empty)'} is not an option for ${spec.label.en}`, pt: `${value || '(vazio)'} não é uma opção de ${spec.label.pt}` }) }
+    }
+    const failed = say(lang, { en: `${spec.label.en} did not change`, pt: `${spec.label.pt} não mudou` })
+    try {
+      const result = await $.config.set({ key: `filetree.${spec.field}`, value: spec.options ? value : value.trim() })
+      if (result.deny) return { message: `${failed}: ${result.deny}` }
+    } catch (err) {
+      return { message: `${failed}: ${err instanceof Error ? err.message : String(err)}` }
+    }
+    return {}
+  }
+  return { message: say(lang, { en: `Unknown action: ${id}`, pt: `Ação desconhecida: ${id}` }) }
+}
+
 export const register: Register = (on, options) => {
   glyphSetting = typeof options?.glyphs === 'string' ? options.glyphs : 'auto'
   const activity = typeof options?.activity === 'string' ? options.activity : 'reads and writes'
@@ -1067,8 +1300,16 @@ export const register: Register = (on, options) => {
   showHints = options?.hints !== 'off'
   openWithSetting = typeof options?.open === 'string' ? options.open : ''
   noDock = options?.start === 'off'
+  // Adds `$.filetree` for the /mods hub; a call is the event the hooks below answer.
+  on('engine.create', async ($, e, next) => {
+    const built = await next(e)
+    return { ...built, filetree: { panel: async () => ({ title: '', sections: [] }), act: async () => ({}) } }
+  })
+
+  on('filetree.panel', async ($, e) => ({ value: await panelOf($, e) }))
+  on('filetree.act', async ($, e) => ({ value: await actOn($, e) }))
+
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'filetree', description: 'Show the file tree; args: [path] (no path = cwd)' })
     const windows = (await $.env.get('OS')) === 'Windows_NT'
     useDrives(windows)
     home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
@@ -1095,21 +1336,6 @@ export const register: Register = (on, options) => {
       else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
     })()
     return next(e)
-  })
-
-  on('command.run', { command: 'filetree' }, async ($, e) => {
-    // The layout checks are the terminal's: the desktop app docks the pane itself and
-    // reports no fullscreen layout, so a session no terminal draws skips them.
-    const terminal = await $.session.surfaces().then(s => s.includes('terminal'), () => true)
-    if (terminal && !e.presentation.isFullscreen) return { text: 'filetree shows in the sidebar, which needs the fullscreen layout. Run /tui fullscreen, then /filetree.' }
-    if (terminal && e.presentation.columns < 110) return { text: 'filetree shows in the sidebar, which needs a terminal at least 110 columns wide. Widen it, then run /filetree.' }
-    noDock = false
-    const arg = (e.args ?? '').trim()
-    const cwd = await cwdOf($)
-    follow = !arg
-    const root = arg ? resolve(cwd, arg, home) : cwd
-    await reset($, root, true)
-    return { text: `File tree on ${shortPath(root)}${follow ? ' (follows the cwd)' : ''}.` }
   })
 
   on('tool.call', async ($, e, next) => {
@@ -1325,6 +1551,7 @@ export const register: Register = (on, options) => {
     if (e.surface !== 'terminal' && e.surface !== 'desktop') return next(e)
     if (e.surface === 'terminal' && e.props.placement === 'inline') {
       noDock = true
+      inlineLayout = true
       void $.ui.close({ id: PANE }).catch(() => undefined)
       const { Box: Empty } = $.ui.resolve(e)
       return <Empty />
