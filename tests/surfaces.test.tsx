@@ -293,6 +293,39 @@ test('hovering a header button says what it does left of the buttons where it fi
   await narrow.unmount()
 })
 
+test('the preview back button and the search clear button say what they do on hover too', { timeoutMs: 20_000, options: { open: 'preview' } }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/Users/k/proj'
+  const clock = world(on, { os: 'darwin', env: { HOME: '/Users/k' }, cwd: root, top: '', status: '', numstat: '', dirs: { [root]: [['a.ts', 'file'], ['b.ts', 'file']] }, files: { [`${root}/a.ts`]: 'const a = 1\n' } }, ran)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await ui.input({ key: 'q', text: 'b', kind: 'change' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('clear search')
+  await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-clear' })
+  await clock.settle()
+  expect(await texts(ui)).toContain('"clear search "')
+  await ui.press({ key: 'clear' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('clear search')
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('back to the tree')
+  await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-back' })
+  await clock.settle()
+  expect(await texts(ui)).toContain('"back to the tree "')
+  await ui.press({ key: 'back' })
+  await clock.settle()
+  expect(await texts(ui)).toContain('a.ts')
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('back to the tree')
+  await ui.unmount()
+})
+
 test('outside a repo only git rev-parse runs, never status, diff or ls-files', { timeoutMs: 20_000 }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/scratch'
