@@ -1,8 +1,9 @@
 import { type BuiltinToolResults, type EngineInterface, type Register, type Timer, update } from 'claude-code'
 import { LINUX_LAUNCH, openCommand, openWithCommand } from './open'
 import type { ButtonProps } from './button'
+import { catalogOf } from './catalog'
 
-import type { Activity, FileNode, FileTree, FiletreeActArgs, FiletreeActResult, FiletreeItem, FiletreeLang, FiletreePanel, FiletreePanelArgs, Theme } from '../types'
+import type { Activity, FileNode, FileTree, FiletreeActArgs, FiletreeCatalogEntry, FiletreeActResult, FiletreeItem, FiletreeLang, FiletreePanel, FiletreePanelArgs, Theme } from '../types'
 import { chainOf, type GitAction, gitActions, readOnly, readTargets, resolve } from './git'
 import type { RowsProps } from './rows'
 import type { RowSpec } from './paint'
@@ -1307,6 +1308,14 @@ async function actOn($: EngineInterface, args: FiletreeActArgs): Promise<Filetre
   return { message: say(lang, { en: `Unknown action: ${id}`, pt: `Ação desconhecida: ${id}` }) }
 }
 
+// `$.filetree.catalog`: every piece of the pane, named, for the Components tab of /mods.
+async function catalog($: EngineInterface, args: FiletreePanelArgs): Promise<FiletreeCatalogEntry[]> {
+  const surface = args?.surface ?? 'terminal'
+  const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
+  const els = $.ui.resolve({ surface, component: 'Pane' })
+  return catalogOf(els, { ...args, surface }, { unicode: unicodeOn(surface), theme, now: await $.clock.now() })
+}
+
 export const register: Register = (on, options) => {
   glyphSetting = typeof options?.glyphs === 'string' ? options.glyphs : 'auto'
   const activity = typeof options?.activity === 'string' ? options.activity : 'reads and writes'
@@ -1321,11 +1330,12 @@ export const register: Register = (on, options) => {
   // Adds `$.filetree` for the /mods hub; a call is the event the hooks below answer.
   on('engine.create', async ($, e, next) => {
     const built = await next(e)
-    return { ...built, filetree: { panel: async () => ({ title: '', sections: [] }), act: async () => ({}) } }
+    return { ...built, filetree: { panel: async () => ({ title: '', sections: [] }), act: async () => ({}), catalog: async () => [] } }
   })
 
   on('filetree.panel', async ($, e) => ({ value: await panelOf($, e) }))
   on('filetree.act', async ($, e) => ({ value: await actOn($, e) }))
+  on('filetree.catalog', async ($, e) => ({ value: await catalog($, e) }))
 
   on('session.start', async ($, e, next) => {
     const windows = (await $.env.get('OS')) === 'Windows_NT'

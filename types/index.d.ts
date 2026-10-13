@@ -91,12 +91,25 @@ export type FiletreePanel = {
 }
 export type FiletreeActArgs = { id: string; value?: string }
 export type FiletreeActResult = { message?: string }
+// One piece of the pane for the Components tab of /mods (the mods panel protocol's catalog).
+export type FiletreeCatalogEntry = {
+  // Stable, kebab-case: what a person names when asking for a change.
+  id: string
+  // The component's name, as a person would say it ("File row, modified").
+  name: string
+  // One line on what it is and where it shows.
+  help?: string
+  // The component drawn for `args.surface` at `args.columns`, from the same builders the pane
+  // draws it with, in a state worth seeing. Static: a press cannot cross to the mod.
+  tree: unknown
+}
 
 declare module 'claude-code' {
   interface EngineInterface {
     filetree: {
       panel: (args: FiletreePanelArgs) => Promise<FiletreePanel>
       act: (args: FiletreeActArgs) => Promise<FiletreeActResult>
+      catalog: (args: FiletreePanelArgs) => Promise<FiletreeCatalogEntry[]>
     }
   }
 
