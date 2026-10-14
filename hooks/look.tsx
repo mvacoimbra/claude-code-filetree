@@ -12,12 +12,42 @@ import { age, formatSize, stamp } from './tree'
 export const ADD_COLOR = '#98c379'
 export const DEL_COLOR = '#e06c75'
 export const BRANCH_ROW = '#branch'
-export const SHIMMER: Tones = Object.fromEntries(Object.entries(TONES).map(([k, v]) => [k, { bright: v.bright, dim: v.dim }]))
+// The terminal's shimmer: each tone's own colours; a read glints purple.
+export const SHIMMER: Tones = Object.fromEntries([...Object.entries(TONES), ['read', TONES.purple] as const].map(([k, v]) => [k, { bright: v?.bright ?? [], dim: v?.dim ?? [] }]))
 export const PINNED_GAP = '  ⋮'
 export const EMPTY_NOTE = 'empty'
 
 export type Paints = { Box: ElementConstructor<BoxProps>; Text: ElementConstructor<TextProps> }
-export type HeaderButton = { id: string; label: string; dim: boolean; hint: string }
+// A header button: its glyph for the terminal, its word for the desktop's native button.
+export type HeaderButton = { id: string; label: string; word: string; dim: boolean; hint: string }
+
+// The colours a tree row is painted in. The terminal's come from its theme (Omarchy's, or the
+// defaults); the desktop's from the skin (desk.tsx), where colour only means a state.
+export type RowInk = {
+  // Body text; undefined is the surface's own text colour.
+  fg: string | undefined
+  muted: string
+  // Ignored by git: quieter than a hidden file.
+  faint: string
+  // A folder's icon.
+  dir: string
+  add: string
+  del: string
+  // A git status letter's colour, by letter.
+  git: Readonly<Record<string, string>>
+}
+
+export function termInk(theme: Theme): RowInk {
+  return {
+    fg: theme.fg || undefined,
+    muted: theme.muted,
+    faint: theme.muted,
+    dir: theme.accent,
+    add: ADD_COLOR,
+    del: DEL_COLOR,
+    git: { ...GIT_COLOR, D: theme.urgent, U: theme.urgent },
+  }
+}
 
 export function clean(segs: Seg[]): Seg[] {
   for (const seg of segs) for (const k of Object.keys(seg) as (keyof Seg)[]) if (seg[k] === undefined) delete seg[k]
@@ -33,27 +63,27 @@ export function faint(hex: string): string {
 
 export function headerButtons(unicode: boolean, s: { follow: boolean; showHidden: boolean; showSize: boolean; selected: boolean }): HeaderButton[] {
   return [
-    { id: 'up', label: unicode ? '↑' : '\u{f005d}', dim: true, hint: 'parent folder' },
-    { id: 'cwd', label: unicode ? '⌂' : '\u{f02dc}', dim: !s.follow, hint: 'follow the cwd' },
-    { id: 'refresh', label: unicode ? '↻' : '\u{f0450}', dim: true, hint: 'reload tree and git' },
-    { id: 'hidden', label: unicode ? (s.showHidden ? '◉' : '○') : s.showHidden ? '\u{f0208}' : '\u{f0209}', dim: !s.showHidden, hint: s.showHidden ? 'hide hidden files' : 'show hidden files' },
-    { id: 'size', label: unicode ? 'Σ' : '\u{f02ca}', dim: !s.showSize, hint: s.showSize ? 'show dates' : 'show sizes' },
-    { id: 'collapse', label: unicode ? '⊟' : '\u{eac5}', dim: true, hint: 'collapse all' },
-    ...(s.selected ? [{ id: 'unselect', label: unicode ? '⊘' : '\u{f0777}', dim: false, hint: 'clear selection' }] : []),
+    { id: 'up', label: unicode ? '↑' : '\u{f005d}', word: 'Up', dim: true, hint: 'parent folder' },
+    { id: 'cwd', label: unicode ? '⌂' : '\u{f02dc}', word: 'Follow', dim: !s.follow, hint: 'follow the cwd' },
+    { id: 'refresh', label: unicode ? '↻' : '\u{f0450}', word: 'Refresh', dim: true, hint: 'reload tree and git' },
+    { id: 'hidden', label: unicode ? (s.showHidden ? '◉' : '○') : s.showHidden ? '\u{f0208}' : '\u{f0209}', word: 'Hidden', dim: !s.showHidden, hint: s.showHidden ? 'hide hidden files' : 'show hidden files' },
+    { id: 'size', label: unicode ? 'Σ' : '\u{f02ca}', word: 'Sizes', dim: !s.showSize, hint: s.showSize ? 'show dates' : 'show sizes' },
+    { id: 'collapse', label: unicode ? '⊟' : '\u{eac5}', word: 'Collapse', dim: true, hint: 'collapse all' },
+    ...(s.selected ? [{ id: 'unselect', label: unicode ? '⊘' : '\u{f0777}', word: 'Unselect', dim: false, hint: 'clear selection' }] : []),
   ]
 }
 
-export const clearButton = (unicode: boolean): HeaderButton => ({ id: 'clear', label: unicode ? '×' : '\u{f0156}', dim: true, hint: 'clear search' })
-export const backButton = (unicode: boolean): HeaderButton => ({ id: 'back', label: unicode ? '← files' : '\u{f004d} files', dim: false, hint: 'back to the tree' })
-export const externalButton = (unicode: boolean): HeaderButton => ({ id: 'external', label: unicode ? '↗' : '\u{f08e}', dim: true, hint: 'open in default app' })
+export const clearButton = (unicode: boolean): HeaderButton => ({ id: 'clear', label: unicode ? '×' : '\u{f0156}', word: 'Clear', dim: true, hint: 'clear search' })
+export const backButton = (unicode: boolean): HeaderButton => ({ id: 'back', label: unicode ? '← files' : '\u{f004d} files', word: 'Files', dim: false, hint: 'back to the tree' })
+export const externalButton = (unicode: boolean): HeaderButton => ({ id: 'external', label: unicode ? '↗' : '\u{f08e}', word: 'Open', dim: true, hint: 'open in default app' })
 
 // A folder's untracked, modified and deleted counts.
-export function countSegs(c: [number, number, number] | undefined, theme: Theme): Seg[] {
+export function countSegs(c: [number, number, number] | undefined, ink: RowInk): Seg[] {
   if (!c) return []
   const out: Seg[] = []
-  if (c[0] > 0) out.push({ t: ` ?:${c[0]}`, c: GIT_COLOR['?'] ?? ADD_COLOR })
-  if (c[1] > 0) out.push({ t: ` M:${c[1]}`, c: GIT_COLOR.M ?? '#e5c07b' })
-  if (c[2] > 0) out.push({ t: ` D:${c[2]}`, c: theme.urgent })
+  if (c[0] > 0) out.push({ t: ` ?:${c[0]}`, c: ink.git['?'] ?? ink.add })
+  if (c[1] > 0) out.push({ t: ` M:${c[1]}`, c: ink.git.M ?? ink.muted })
+  if (c[2] > 0) out.push({ t: ` D:${c[2]}`, c: ink.git.D ?? ink.del })
   return out
 }
 
@@ -83,43 +113,47 @@ export type NodeLook = {
   selected: boolean
   isRepo: boolean
   unicode: boolean
-  theme: Theme
+  ink: RowInk
   width: number
+  // The desktop app: plain Unicode there draws no type glyph (a folder has its caret) and no
+  // ignored mark (the faint name says it), since glyphs do not stand in for icons on the desktop.
+  desktop?: boolean
 }
 
 // One file or folder row of the tree.
 export function nodeRow(x: NodeLook): RowSpec {
-  const { node: n, status, theme, unicode, loc } = x
-  const gitColor = status === 'D' || status === 'U' ? theme.urgent : status ? (GIT_COLOR[status] ?? theme.muted) : undefined
-  const iconColor = x.isIgnored ? theme.muted : (gitColor ?? (n.hidden ? theme.muted : n.kind === 'dir' ? theme.accent : theme.muted))
-  const nameColor = x.isIgnored ? theme.muted : (gitColor ?? (n.hidden ? theme.muted : theme.fg || undefined))
+  const { node: n, status, ink, unicode, loc } = x
+  const bare = Boolean(x.desktop) && unicode
+  const gitColor = status ? (ink.git[status] ?? ink.muted) : undefined
+  const iconColor = x.isIgnored ? ink.faint : (gitColor ?? (n.hidden ? ink.muted : n.kind === 'dir' ? ink.dir : ink.muted))
+  const nameColor = x.isIgnored ? ink.faint : (gitColor ?? (n.hidden ? ink.muted : ink.fg))
   const meta = x.meta
   const locText = loc ? `${loc[0] ? ` +${loc[0]}` : ''}${loc[1] ? ` -${loc[1]}` : ''}` : ''
-  const dirCounts = n.kind === 'dir' ? countSegs(x.counts, theme) : []
-  const badge = dirCounts.length ? '' : status ? ` ${status}` : x.isIgnored ? (unicode ? ' ⊘' : ' \u{f05e}') : '  '
+  const dirCounts = n.kind === 'dir' ? countSegs(x.counts, ink) : []
+  const badge = dirCounts.length ? '' : status ? ` ${status}` : x.isIgnored && !bare ? (unicode ? ' ⊘' : ' \u{f05e}') : '  '
   const countsText = dirCounts.map(c => c.t).join('')
-  const cols = Math.max(4, x.width - x.depth * 2 - 6 - (meta ? meta.length + 1 : 0) - locText.length - badge.length - countsText.length)
+  const cols = Math.max(4, x.width - x.depth * 2 - (bare ? 4 : 6) - (meta ? meta.length + 1 : 0) - locText.length - badge.length - countsText.length)
   const name = n.name.length > cols ? n.name.slice(0, cols - 1) + '…' : n.name
   const caret = n.kind === 'dir' ? (unicode ? (x.open ? '▾' : '▸') : x.open ? CHEVRON_OPEN : CHEVRON_CLOSED) + ' ' : '  '
   const glyph = unicode ? (n.kind === 'dir' ? '■' : '·') : fileIcon(n, x.open, x.isRepo)
   const lit = x.isBright || x.isDim
   const left: Seg[] = [
     { t: '  '.repeat(x.depth) },
-    { t: caret, c: theme.muted },
-    lit ? { t: glyph + ' ', sh: x.tone, dim: x.isDim, one: true } : { t: glyph + ' ', c: iconColor },
+    { t: caret, c: ink.muted },
+    ...(bare ? [] : [lit ? { t: glyph + ' ', sh: x.tone, dim: x.isDim, one: true } : { t: glyph + ' ', c: iconColor }]),
     lit ? { t: name, sh: x.tone, dim: x.isDim, b: x.isBright } : { t: name, c: nameColor, b: x.selected, s: status === 'D' && n.kind !== 'dir' },
   ]
   const right: Seg[] = []
-  if (meta) right.push({ t: ` ${meta}`, c: theme.muted })
-  if (loc && loc[0] > 0) right.push({ t: ` +${loc[0]}`, c: ADD_COLOR })
-  if (loc && loc[1] > 0) right.push({ t: ` -${loc[1]}`, c: DEL_COLOR })
+  if (meta) right.push({ t: ` ${meta}`, c: ink.muted })
+  if (loc && loc[0] > 0) right.push({ t: ` +${loc[0]}`, c: ink.add })
+  if (loc && loc[1] > 0) right.push({ t: ` -${loc[1]}`, c: ink.del })
   right.push(...dirCounts)
-  if (badge) right.push({ t: badge, c: status ? gitColor : theme.muted, b: true })
+  if (badge) right.push({ t: badge, c: status ? gitColor : ink.muted, b: true })
   return { id: n.id, left: clean(left), right: clean(right) }
 }
 
 // A dim line in the tree that is no file: `empty`, the pinned-rows gap, the cut note.
-export const noteRow = (text: string, theme: Theme): RowSpec => ({ id: '', left: [{ t: text, c: theme.muted }], right: [] })
+export const noteRow = (text: string, color: string): RowSpec => ({ id: '', left: [{ t: text, c: color }], right: [] })
 
 // What the hovered button does, when it fits beside a title that long.
 export function hintFor(buttons: HeaderButton[], hovered: string, columns: number, title: number, surface: string): string | null {

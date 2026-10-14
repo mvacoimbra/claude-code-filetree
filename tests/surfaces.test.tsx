@@ -151,6 +151,17 @@ async function texts(ui: any): Promise<string> {
   return JSON.stringify(await ui.drawn()) + rows
 }
 
+// The rows surface module wherever the pane put it: at the top on the terminal, inset on the desktop.
+function rowsClient(node: any): any {
+  if (!node || typeof node !== 'object') return undefined
+  if (node.type === 'Client' && node.props?.key === 'rows') return node
+  for (const child of node.children ?? []) {
+    const hit = rowsClient(child)
+    if (hit) return hit
+  }
+  return undefined
+}
+
 const STAMP = /\d{4}-\d{2}-\d{2} \d{2}:\d{2}/
 const NERD = /[\u{e000}-\u{f8ff}\u{f0000}-\u{fffff}]/u
 
@@ -171,7 +182,9 @@ test('macOS Claude Code app: desktop pane draws, selects, opens with open', { ti
   expect(NERD.test(shown)).toBe(false)
   await ui.post({ press: `${root}/README.md` }, { in: 'rows' })
   await clock.settle()
-  expect(await texts(ui)).toContain('"selected: ","README.md"')
+  const footer = await texts(ui)
+  expect(footer).toContain('"children":["selected:"]')
+  expect(footer).toContain('"children":["README.md"]')
   const sent = await $.prompt.submit({ text: 'what is this?', wait: false } as any)
   expect(JSON.stringify(sent)).toContain(`${root}/README.md`)
   await ui.post({ press: `${root}/README.md` }, { in: 'rows' })
@@ -297,20 +310,20 @@ test('hovering a header button says what it does left of the buttons where it fi
   for (const surface of ['desktop', 'terminal'] as const) {
     const ui = await $.ui.mount({ plugin: 'filetree', surface, component: 'Pane', requestId: 'filetree', props: paneProps(60) })
     await clock.settle()
-    expect(JSON.stringify(await ui.drawn())).toContain('"gap":1')
+    expect(JSON.stringify(await ui.drawn())).toMatch(surface === 'desktop' ? /"columnGap":1/ : /"gap":1/)
     expect(await texts(ui)).not.toContain('reload tree and git')
     await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-refresh' })
     await clock.settle()
-    expect(await texts(ui)).toContain('"reload tree and git "')
+    expect(await texts(ui)).toContain('reload tree and git')
     await ui.pointer({ type: 'leave', x: 0, y: 0, in: 'button-refresh' })
     await clock.settle()
     expect(await texts(ui)).not.toContain('reload tree and git')
     await ui.pointer({ type: 'enter', x: 0, y: 0, in: 'button-hidden' })
     await clock.settle()
-    expect(await texts(ui)).toContain('"hide hidden files "')
+    expect(await texts(ui)).toContain('hide hidden files')
     await ui.press({ key: 'hidden' })
     await clock.settle()
-    expect(await texts(ui)).toContain('"show hidden files "')
+    expect(await texts(ui)).toContain('show hidden files')
     await ui.press({ key: 'hidden' })
     await ui.pointer({ type: 'leave', x: 0, y: 0, in: 'button-hidden' })
     await clock.settle()
@@ -400,7 +413,7 @@ test('long trees scroll: wheel, scrollbar drag, and a click does not jump the vi
   const props = { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } }
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props })
   await clock.settle()
-  const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props
+  const rowsOf = async () => rowsClient(await ui.drawn()).props.props
   let p = await rowsOf()
   expect(p.bar).toBeDefined()
   expect(p.rows[0].id).toBe(`${root}/f00.txt`)
@@ -433,7 +446,7 @@ test('desktop: a long tree draws every row and leaves the wheel to the app', { t
   const props = { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } }
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props })
   await clock.settle()
-  const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props
+  const rowsOf = async () => rowsClient(await ui.drawn()).props.props
   let p = await rowsOf()
   expect(p.bar).toBeUndefined()
   expect(p.rows.length).toBe(60)
@@ -456,7 +469,7 @@ test('desktop: a very large open tree is cut with a note so the drawn tree stays
   await clock.settle()
   const ui = await $.ui.mount({ plugin: 'filetree', surface: 'desktop', component: 'Pane', requestId: 'filetree', props: { ...paneProps(60), scroll: { offset: 0, bodyRows: 20 } } })
   await clock.settle()
-  const client = ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client')
+  const client = rowsClient(await ui.drawn())
   const rows = client.props.props.rows as any[]
   expect(JSON.stringify(client.props.props).length).toBeLessThan(100_000)
   expect(rows.length).toBeLessThan(5000)
@@ -476,7 +489,7 @@ async function scrolledTree($: any, on: any) {
   await clock.settle()
   await $.ui.scroll({ component: 'Pane', requestId: 'filetree', by: 1 } as any)
   await clock.settle()
-  const ids = async () => (((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props.rows as { id: string }[]).map(r => r.id)
+  const ids = async () => (rowsClient(await ui.drawn()).props.props.rows as { id: string }[]).map(r => r.id)
   expect((await ids())[0]).toBe(`${root}/f02.txt`)
   return { root, clock, ui, ids }
 }
@@ -499,7 +512,7 @@ test('follow off: reads, writes and folders Claude opens above the view never mo
   await $.tool.call({ tool: 'Read', file_path: `${root}/f05.txt` } as any)
   await clock.settle()
   expect((await ids())[0]).toBe(`${root}/f02.txt`)
-  expect(await texts(ui)).toContain(shimmer('f05.txt', 'purple'))
+  expect(await texts(ui)).toContain(shimmer('f05.txt', 'read'))
   await $.tool.call({ tool: 'Read', file_path: `${root}/a/a3.txt` } as any)
   await clock.settle()
   expect((await ids())[0]).toBe(`${root}/f02.txt`)
@@ -541,7 +554,7 @@ test('watches only git metadata, copies paths, clears search, Home and End', { t
   expect(await ui.find({ key: 'button-clear' })).toBeUndefined()
   await ui.post({ key: 'end' }, { in: 'rows' })
   await clock.settle()
-  const rowsOf = async () => ((await ui.drawn()) as any).children.find((c: any) => c.type === 'Client').props.props
+  const rowsOf = async () => rowsClient(await ui.drawn()).props.props
   expect((await rowsOf()).active).toBe(`${root}/c.txt`)
   await ui.post({ key: 'home' }, { in: 'rows' })
   await clock.settle()
@@ -1260,7 +1273,7 @@ for (const hints of ['on', 'off'] as const) {
     await clock.settle()
     const drawn = (await ui.drawn()) as any
     expect(JSON.stringify(drawn).includes('git init')).toBe(hints === 'on')
-    expect(drawn.children.find((c: any) => c.type === 'Client').props.props.rows.length).toBe(hints === 'on' ? 17 : 18)
+    expect(rowsClient(drawn).props.props.rows.length).toBe(hints === 'on' ? 17 : 18)
     await ui.unmount()
   })
 }
@@ -1314,10 +1327,10 @@ test('files a Grep or Glob search returns shimmer as reads, relative names resol
   await clock.settle()
   await $.tool.call({ tool: 'Grep', pattern: 'x' } as any)
   await clock.settle()
-  expect(await texts(ui)).toContain(shimmer('b.ts', 'purple'))
+  expect(await texts(ui)).toContain(shimmer('b.ts', 'read'))
   await $.tool.call({ tool: 'Glob', pattern: '*.ts' } as any)
   await clock.settle()
-  expect(await texts(ui)).toContain(shimmer('a.ts', 'purple'))
+  expect(await texts(ui)).toContain(shimmer('a.ts', 'read'))
   await ui.unmount()
 })
 

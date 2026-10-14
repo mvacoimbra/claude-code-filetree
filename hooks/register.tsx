@@ -8,6 +8,10 @@ import { chainOf, type GitAction, gitActions, readOnly, readTargets, resolve } f
 import type { RowsProps } from './rows'
 import type { RowSpec } from './paint'
 import { cutNote } from './paint'
+import { cursorBg, deskBranch, deskChip, deskEmpty, deskFooter, deskFrame, deskHint, deskInk, deskNoRepo, deskPreview, deskPreviewHeader, deskPreviewNote, deskSearch, deskShimmer, deskTitle, deskToolbar, deskTree, flashTone, hoverBg } from './desk'
+import { kitOf } from './kit/kit'
+import { toneOf } from './kit/tone'
+import type { KitSkin } from './kit/tone'
 import {
   backButton,
   BRANCH_ROW,
@@ -35,6 +39,7 @@ import {
   SEARCH,
   SHIMMER,
   hintFor,
+  termInk,
 } from './look'
 import {
   ancestorsOf,
@@ -156,6 +161,15 @@ function osName($: EngineInterface): Promise<'linux' | 'darwin' | 'win32'> {
     }
   })()
   return platform
+}
+
+// The skin every mod of the pack wears, from skins; Claude Code's own colours without it.
+async function skinOf($: EngineInterface): Promise<KitSkin | null> {
+  try {
+    return await $.skins.palette()
+  } catch {
+    return null
+  }
 }
 
 async function cwdOf($: EngineInterface): Promise<string> {
@@ -776,7 +790,7 @@ async function afterBash($: EngineInterface, jobs: Job[]): Promise<void> {
     if (found.length) {
       await revealPaths($, found)
       const shown = new Set((await get($)).nodes.map(n => n.id))
-      for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'purple'
+      for (const r of found) if (shown.has(r) && !tones[r]) tones[r] = 'read'
     }
   }
   if (showWrites && actions.length) {
@@ -815,13 +829,13 @@ function scheduleScan($: EngineInterface, job: Job): void {
 }
 
 async function touched($: EngineInterface, paths: string[], tone: string, show: boolean): Promise<void> {
-  if (tone !== 'purple' && previewed && paths.map(posix).includes(previewed.path)) previewed = null
+  if (tone !== 'read' && previewed && paths.map(posix).includes(previewed.path)) previewed = null
   if (await followCwd($)) return
   const t = await get($)
   if (!t.root) return
   const within = paths.map(posix).filter(p => inside(t.root, p))
   if (within.length === 0) return
-  if (tone !== 'purple') {
+  if (tone !== 'read') {
     searchIndex = null
     await staleSizes($, within)
     await revealPaths($, within.map(dirname))
@@ -1349,7 +1363,7 @@ async function catalog($: EngineInterface, args: FiletreePanelArgs): Promise<Fil
   const surface = args?.surface ?? 'terminal'
   const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
   const els = $.ui.resolve({ surface, component: 'Pane' })
-  return catalogOf(els, { ...args, surface }, { unicode: unicodeOn(surface), theme, now: await $.clock.now() })
+  return catalogOf(els, { ...args, surface }, { unicode: unicodeOn(surface), theme, tone: toneOf(await skinOf($)), now: await $.clock.now() })
 }
 
 export const register: Register = (on, options) => {
@@ -1459,7 +1473,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const result = await next(e)
     if (result.deny || result.isError || e.tool !== 'Read' || !showReads) return result
-    void touched($, [posix(e.file_path)], 'purple', true)
+    void touched($, [posix(e.file_path)], 'read', true)
     return result
   })
 
@@ -1470,7 +1484,7 @@ export const register: Register = (on, options) => {
       const names = (result.result as Partial<BuiltinToolResults['Grep']> | undefined)?.filenames
       if (!Array.isArray(names) || names.length === 0) return result
       const cwd = await cwdOf($)
-      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'purple', true)
+      void touched($, names.slice(0, SEARCH_REVEAL_LIMIT).map(f => resolve(cwd, posix(f), home)), 'read', true)
       return result
     })
 
@@ -1623,19 +1637,30 @@ export const register: Register = (on, options) => {
       const { Box: Empty } = $.ui.resolve(e)
       return <Empty />
     }
+    const desktop = e.surface === 'desktop'
     const unicode = unicodeOn(e.surface)
-    const { Box, Text, Input, Client } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Text, Input, Client } = ui
     const els = { Box, Text }
     const t = await get($)
     const theme: Theme = (await $.state.get(THEME)).value ?? DEFAULT_THEME
+    // The desktop wears the skin; the terminal keeps its theme (Omarchy's, or the defaults).
+    const tone = desktop ? toneOf(await skinOf($)) : null
+    const k = tone ? kitOf(ui, tone, e.surface, e.props.bodyColumns) : null
+    const ink = tone ? deskInk(tone) : termInk(theme)
+    const look = tone ? { activeBg: cursorBg(tone), hoverBg: hoverBg(tone), tones: deskShimmer(tone) } : { activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER }
     // The desktop tab never hands the wheel or the scrollbar drag to the pane, so
     // there it draws every row and lets the engine scroll the body.
-    nativeScroll = e.surface === 'desktop'
+    nativeScroll = desktop
     const bodyRows = e.props.scroll?.bodyRows ?? 1
-    const button = (b: HeaderButton) => <Client key={`button-${b.id}`} module="./button.tsx" props={{ id: b.id, label: b.label, dim: b.dim } satisfies ButtonProps} />
-    // What the hovered header button does, left of the buttons, when it fits beside a title that
-    // long; the buttons are Clients only so that they can say when the pointer is over them.
-    const hint = (buttons: HeaderButton[], title: number) => drawHint(els, hintFor(buttons, hovered, e.props.bodyColumns, title, e.surface), theme)
+    // The buttons are Clients only so that they can say when the pointer is over them; on the
+    // desktop each is a native button that names itself, on the terminal its glyph.
+    const button = (b: HeaderButton) => (
+      <Client key={`button-${b.id}`} module="./button.tsx" props={{ id: b.id, label: desktop ? b.word : b.label, dim: b.dim, ...(desktop ? { native: true } : {}) } satisfies ButtonProps} />
+    )
+    // What the hovered header button does, when it fits beside a title that long.
+    const hintText = (buttons: HeaderButton[], title: number) => (desktop ? deskHint(buttons, hovered, e.props.bodyColumns, title) : hintFor(buttons, hovered, e.props.bodyColumns, title, e.surface))
+    const hint = (buttons: HeaderButton[], title: number) => drawHint(els, hintText(buttons, title), theme)
     if (t.preview) {
       if (previewed?.path !== t.preview) await loadPreview($, t.preview)
       const p = previewed
@@ -1646,14 +1671,23 @@ export const register: Register = (on, options) => {
       const name = t.preview !== t.root && inside(t.root, t.preview) ? relative(t.root, t.preview) : shortPath(t.preview)
       const back = backButton(unicode)
       const external = externalButton(unicode)
-      return drawFrame(els, bodyRows, theme, [
-        drawPreviewHeader(els, button(back), name, hint([back, external], 8 + name.length), button(external)),
-        p?.note ? drawPreviewNote(els, p.note) : null,
+      const body = (
         <Client
           key="rows"
           module="./rows.tsx"
-          props={{ rows: [], active: '', activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
-        />,
+          props={{ rows: [], active: '', activeBg: look.activeBg, hoverBg: look.hoverBg, tones: look.tones, pointer: false, preview: { text: win.text, path: t.preview, startLine: win.top + 1, markdown } } satisfies RowsProps}
+        />
+      )
+      if (k)
+        return deskFrame(k, bodyRows, [
+          deskPreviewHeader(k, button(back), name, hintText([back, external], 14 + back.word.length + external.word.length + name.length), button(external)),
+          p?.note ? <Box paddingTop={1}>{deskPreviewNote(k, p.note)}</Box> : null,
+          <Box paddingTop={1}>{deskPreview(k, body)}</Box>,
+        ])
+      return drawFrame(els, bodyRows, theme, [
+        drawPreviewHeader(els, button(back), name, hint([back, external], 8 + name.length), button(external)),
+        p?.note ? drawPreviewNote(els, p.note) : null,
+        body,
       ])
     }
     const now = await $.clock.now()
@@ -1663,7 +1697,7 @@ export const register: Register = (on, options) => {
     const dimmed = new Set(t.flashOn ? t.flashDim : [])
     const ignored = new Set(t.ignored)
     const untracked = new Set(t.untrackedDirs)
-    const width = Math.max(24, e.props.bodyColumns)
+    const width = Math.max(24, e.props.bodyColumns - (desktop ? 2 : 0))
     const rows = visibleRows(t)
     const fixed = 2 + (t.top ? (t.branch ? 1 : 0) : showHints ? 1 : 0) + (t.selected || latest ? 1 : 0)
     const room = nativeScroll ? Math.max(1, rows.length) : Math.max(5, (e.props.scroll?.bodyRows ?? 40) - fixed)
@@ -1688,9 +1722,9 @@ export const register: Register = (on, options) => {
     const shown = rows.slice(from, from + room - pinned.length)
     if (t.showSize) wantSizes($, [...pinned, ...shown].filter(r => r.node.kind === 'dir' && !(r.node.id in t.dirSizes)).map(r => r.node.id))
     const totals: [number, number] = t.top ? (t.diff[t.root] ?? [0, 0]) : [0, 0]
-    const rootCounts = t.top ? countSegs(t.counts[t.root], theme) : []
     const buttons = headerButtons(unicode, { follow, showHidden: t.showHidden, showSize: t.showSize, selected: Boolean(t.selected) })
     const clear = clearButton(unicode)
+    const unselect = buttons.find(b => b.id === 'unselect')
     const header = t.top ? [t.top.split('/').pop() ?? t.top, t.prefix.replace(/\/$/, '')].filter(Boolean).join('/') : t.root.split('/').pop() || t.root
 
     const rowSpec = (r: (typeof rows)[number]): RowSpec => {
@@ -1713,14 +1747,16 @@ export const register: Register = (on, options) => {
         selected: n.id === t.selected,
         isRepo: n.kind === 'dir' && n.id === t.top,
         unicode,
-        theme,
+        ink,
         width,
+        desktop,
       })
     }
 
-    const note = (text: string): RowSpec => noteRow(text, theme)
+    const note = (text: string): RowSpec => noteRow(text, ink.muted)
     const specs: RowSpec[] = [
-      ...(rows.length === 0 ? [note(EMPTY_NOTE)] : []),
+      // The desktop says an empty tree in the kit's words, above the rows.
+      ...(rows.length === 0 && !desktop ? [note(EMPTY_NOTE)] : []),
       ...pinned.map(rowSpec),
       ...(pinned.length > 0 ? [note(PINNED_GAP)] : []),
       ...shown.map(rowSpec),
@@ -1735,28 +1771,44 @@ export const register: Register = (on, options) => {
       !nativeScroll && rows.length > shown.length + pinned.length
         ? { pos: max ? Math.round((from / max) * (specs.length - barSize)) : 0, size: barSize, thumb: theme.accent, track: theme.muted }
         : undefined
+    const tree = (
+      <Client key="rows" module="./rows.tsx" props={{ rows: specs, active: t.cursor, activeBg: look.activeBg, hoverBg: look.hoverBg, tones: look.tones, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps} />
+    )
+    const field = desktop ? (
+      <Input key="q" placeholder="Search files" submitLabel={SEARCH.submitLabel} autoFocus value={t.query} onInput={(v: string) => void search($, v)} onSubmit={(v: string) => void jump($, v)} />
+    ) : (
+      <Input key="q" label={SEARCH.label} placeholder={SEARCH.placeholder} submitLabel={SEARCH.submitLabel} autoFocus value={t.query} onInput={(v: string) => void search($, v)} onSubmit={(v: string) => void jump($, v)} />
+    )
+    const selectedPath = t.selected ? (t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)) : ''
 
+    if (k) {
+      const flash = bright.has(BRANCH_ROW) ? flashTone(t.flashTones[BRANCH_ROW] ?? 'green') : undefined
+      return deskFrame(k, bodyRows, [
+        deskTitle(k, header, hintText(buttons, header.length)),
+        t.top && t.branch ? deskBranch(k, { branch: t.branch, ...(flash ? { flash } : {}), totals, ...(t.counts[t.root] ? { counts: t.counts[t.root] } : {}) }) : null,
+        !t.top && showHints ? deskNoRepo(k) : null,
+        // Unselect sits with the selection, in the footer.
+        <Box paddingTop={1}>{deskToolbar(k, buttons.filter(b => b.id !== 'unselect').map(button))}</Box>,
+        <Box paddingTop={1}>{deskSearch(k, { query: t.query, field, hint: t.query ? hintText([clear], 8 + t.query.length + clear.word.length) : null, clear: t.query ? button(clear) : null })}</Box>,
+        rows.length === 0 ? <Box paddingTop={1}>{deskEmpty(k, t.query)}</Box> : null,
+        deskTree(k, tree),
+        <Box flexGrow={1} />,
+        t.selected || latest ? deskFooter(k, selectedPath, latest ? deskChip(k, latest) : null, unselect ? button(unselect) : null) : null,
+      ])
+    }
+
+    const rootCounts = t.top ? countSegs(t.counts[t.root], ink) : []
     const branchRow = () =>
       t.top && t.branch
         ? drawBranchRow(els, { branch: t.branch, ...(bright.has(BRANCH_ROW) ? { flashTone: t.flashTones[BRANCH_ROW] ?? 'teal' } : {}), totals, rootCounts, unicode, theme })
         : null
-    const selectedPath = t.selected ? (t.selected !== t.root && inside(t.root, t.selected) ? t.selected.slice(t.root.endsWith('/') ? t.root.length : t.root.length + 1) : shortPath(t.selected)) : ''
 
     return drawFrame(els, bodyRows, theme, [
       drawHeader(els, header, theme, hint(buttons, header.length), buttons.map(button)),
       branchRow(),
       !t.top && showHints && drawNoRepo(els, unicode, theme),
-      drawSearchRow(els, {
-        query: t.query,
-        field: <Input key="q" label={SEARCH.label} placeholder={SEARCH.placeholder} submitLabel={SEARCH.submitLabel} autoFocus value={t.query} onInput={(v: string) => void search($, v)} onSubmit={(v: string) => void jump($, v)} />,
-        hint: t.query ? hint([clear], 2 + t.query.length) : null,
-        clear: t.query ? button(clear) : null,
-      }),
-      <Client
-        key="rows"
-        module="./rows.tsx"
-        props={{ rows: specs, active: t.cursor, activeBg: theme.selection, hoverBg: faint(theme.selection), tones: SHIMMER, pointer, ...(bar ? { bar } : {}) } satisfies RowsProps}
-      />,
+      drawSearchRow(els, { query: t.query, field, hint: t.query ? hint([clear], 2 + t.query.length) : null, clear: t.query ? button(clear) : null }),
+      tree,
       <Box flexGrow={1} />,
       t.selected || latest ? drawFooter(els, selectedPath, latest ? drawChip(els, latest, unicode, theme) : null) : null,
     ])
