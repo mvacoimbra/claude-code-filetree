@@ -146,6 +146,9 @@ test('the catalog draws each surface’s version, and every tree mounts on termi
   expect(tree('file-row-deleted')).toContain('"color":"error"')
   expect(tree('header')).toContain('"type":"Svg"')
   expect(tree('header')).toContain('Refresh')
+  // Buttons are drawn still by the kit: a hairline round box with the label.
+  expect(tree('header-button-refresh')).toContain('"borderStyle":"round"')
+  expect(tree('header-button-refresh')).not.toContain('"type":"Button"')
   expect(tree('note-no-match')).toContain('No files match')
   expect(tree('preview-note-error')).toContain('Could not read the file')
   expect(tree('activity-chip-failed')).toContain('"color":"error"')
