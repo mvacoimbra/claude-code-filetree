@@ -1244,44 +1244,50 @@ async function panelOf($: EngineInterface, args: FiletreePanelArgs): Promise<Fil
   const branch = t.branch?.head ?? ''
   const summary = [isOpen ? say(lang, { en: 'open', pt: 'aberto' }) : say(lang, { en: 'closed', pt: 'fechado' }), shortPath(root), branch].filter(Boolean).join(' · ')
 
-  const pane: FiletreeItem[] = [
-    isOpen
-      ? {
+  const folder: FiletreeItem = {
+    kind: 'input',
+    id: 'folder',
+    label: say(lang, { en: 'Folder', pt: 'Pasta' }),
+    help: `${say(lang, { en: 'Now', pt: 'Agora' })}: ${shortPath(root)}${follow ? say(lang, { en: ', following the working folder', pt: ', acompanhando a pasta de trabalho' }) : ''}. ${say(lang, {
+      en: 'Shows another folder, absolute or relative to the working folder, until you open the pane again',
+      pt: 'Mostra outra pasta, absoluta ou relativa à pasta de trabalho, até você abrir o painel de novo',
+    })}`,
+    placeholder: '~/projects/app',
+    submitLabel: say(lang, { en: 'Show', pt: 'Mostrar' }),
+    scope: 'session',
+  }
+  // The pane's presses close the group, its main one last: Focus while it is open, Open while not.
+  const presses: FiletreeItem[] = isOpen
+    ? [
+        {
           kind: 'action',
           id: 'close',
+          title: say(lang, { en: 'Close pane', pt: 'Fechar painel' }),
           label: say(lang, { en: 'Close', pt: 'Fechar' }),
-          help: say(lang, { en: 'Closes the pane; it stays closed until you open it again', pt: 'Fecha o painel; ele fica fechado até você abri-lo de novo' }),
+          help: say(lang, { en: 'It stays closed until you open it again', pt: 'Ele fica fechado até você abri-lo de novo' }),
           scope: 'session',
-        }
-      : {
+        },
+        {
           kind: 'action',
           id: 'open',
-          label: say(lang, { en: 'Open', pt: 'Abrir' }),
-          help: say(lang, { en: 'Opens the pane on the working folder, which it follows, and gives it the keyboard', pt: 'Abre o painel na pasta de trabalho, que ele acompanha, e passa o teclado para ele' }),
+          title: say(lang, { en: 'Focus tree', pt: 'Focar a árvore' }),
+          label: say(lang, { en: 'Focus', pt: 'Focar' }),
+          help: say(lang, { en: 'Back to the working folder, and the keyboard to the tree', pt: 'Volta à pasta de trabalho e passa o teclado para a árvore' }),
           primary: true,
           scope: 'session',
         },
-    {
-      kind: 'input',
-      id: 'folder',
-      label: say(lang, { en: 'Folder', pt: 'Pasta' }),
-      help: `${say(lang, { en: 'Now', pt: 'Agora' })}: ${shortPath(root)}${follow ? say(lang, { en: ', following the working folder', pt: ', acompanhando a pasta de trabalho' }) : ''}. ${say(lang, {
-        en: 'Shows another folder, absolute or relative to the working folder, until you open the pane again',
-        pt: 'Mostra outra pasta, absoluta ou relativa à pasta de trabalho, até você abrir o painel de novo',
-      })}`,
-      placeholder: '~/projects/app',
-      submitLabel: say(lang, { en: 'Show', pt: 'Mostrar' }),
-      scope: 'session',
-    },
-  ]
-  if (isOpen)
-    pane.push({
-      kind: 'action',
-      id: 'open',
-      label: say(lang, { en: 'Focus', pt: 'Focar' }),
-      help: say(lang, { en: 'Back to the working folder, and the keyboard to the tree', pt: 'Volta à pasta de trabalho e passa o teclado para a árvore' }),
-      scope: 'session',
-    })
+      ]
+    : [
+        {
+          kind: 'action',
+          id: 'open',
+          title: say(lang, { en: 'Open pane', pt: 'Abrir painel' }),
+          label: say(lang, { en: 'Open', pt: 'Abrir' }),
+          help: say(lang, { en: 'On the working folder, which it follows, with the keyboard', pt: 'Na pasta de trabalho, que ele acompanha, com o teclado' }),
+          primary: true,
+          scope: 'session',
+        },
+      ]
 
   const values = await configValues($)
   const of = (section: Field['section']) => FIELDS.filter(spec => spec.section === section).map(spec => fieldItem(lang, spec, values[spec.field] ?? spec.fallback))
@@ -1298,7 +1304,7 @@ async function panelOf($: EngineInterface, args: FiletreePanelArgs): Promise<Fil
     summary,
     tone: isOpen ? 'ok' : 'muted',
     sections: [
-      { id: 'pane', title: say(lang, { en: 'Pane', pt: 'Painel' }), items: [...pane, ...of('pane')] },
+      { id: 'pane', title: say(lang, { en: 'Pane', pt: 'Painel' }), items: [folder, ...of('pane'), ...presses] },
       { id: 'tree', title: say(lang, { en: 'Tree', pt: 'Árvore' }), items: [hidden, ...of('tree')] },
       { id: 'claude', title: say(lang, { en: 'Claude’s activity', pt: 'Atividade do Claude' }), items: of('claude') },
     ],
