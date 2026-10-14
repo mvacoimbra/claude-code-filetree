@@ -78,6 +78,8 @@ const EXPECTED = [
   'preview-code',
   'preview-markdown',
   'preview-note-binary',
+  'note-empty',
+  'note-no-match',
   'glyphs-nerd',
   'glyphs-plain',
 ]
@@ -137,11 +139,21 @@ test('the catalog draws each surface’s version, and every tree mounts on termi
   expect(NERD.test(tree('file-row'))).toBe(false)
   expect(tree('scrollbar')).toContain('Drawn in the terminal')
   expect(tree('scrollbar')).not.toContain('┃')
+  // The desktop wears the skin (Claude Code's own colours here): states in its theme keys, no
+  // terminal hex, kit icons, the kit's empty states and notices.
+  expect(tree('file-row-modified')).toContain('"color":"warning"')
+  expect(tree('file-row-modified')).not.toContain('#e5c07b')
+  expect(tree('file-row-deleted')).toContain('"color":"error"')
+  expect(tree('header')).toContain('"type":"Svg"')
+  expect(tree('header')).toContain('Refresh')
+  expect(tree('note-no-match')).toContain('No files match')
+  expect(tree('preview-note-error')).toContain('Could not read the file')
+  expect(tree('activity-chip-failed')).toContain('"color":"error"')
   for (const e of desktop) expect(['Box', 'Text']).toContain((e.tree as { type?: string }).type)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'hub', surface, component: 'Pane', requestId: 'components', props: paneProps })
-    const drawn = JSON.stringify(await ui.drawn())
-    for (const word of ['no git repo', 'selected: ', 'origin/main', 'binary file']) expect(drawn).toContain(word)
+    const drawn = JSON.stringify(await ui.drawn()).toLowerCase()
+    for (const word of ['no git repo', 'selected:', 'origin/main', 'binary file']) expect(drawn).toContain(word)
     await ui.unmount()
   }
 })
