@@ -42,6 +42,8 @@ type World = {
   links?: string[]
   files?: Record<string, string>
   mtimes?: Record<string, number>
+  // filetree's own store, kept here so a test can read it and write it as another session would.
+  store?: Record<string, unknown>
 }
 type Ran = string[][]
 const opens: unknown[] = []
@@ -51,7 +53,14 @@ const envs: Record<string, string>[] = []
 function world(on: any, w: World, ran: Ran) {
   mock.env(on, w.env)
   const clock = mock.clock(on, { now: 1_800_000_000_000 })
-  mock.store(on)
+  const store = w.store
+  if (store) {
+    on('store.get', (_$: any, e: any) => ({ value: store[e.key] }))
+    on('store.set', (_$: any, e: any) => {
+      store[e.key] = e.value
+      return { value: undefined }
+    })
+  } else mock.store(on)
   on('session.start', (_$: any, e: any) => ({ cwd: e.cwd }))
   on('session.cwd', () => ({ value: w.cwd }))
   on('session.id', () => ({ value: 'test-session' }))
@@ -1038,7 +1047,7 @@ test('a pinned path with dot segments resolves to the same folder', { timeoutMs:
   const r = await act($, { id: 'folder', value: `${root}/./src/..` })
   expect(r).toEqual({})
   const panel = await panelOf($)
-  expect(panel.summary?.startsWith('~/proj · ')).toBe(true)
+  expect(panel.summary?.split(' · ')[1]).toBe('~/proj')
 })
 
 test('a written file whose name holds a newline still shimmers', { timeoutMs: 20_000 }, async ($, on) => {
@@ -1337,7 +1346,7 @@ const ROWS: Rows = [
 const itemsOf = (p: FiletreePanel) => p.sections.flatMap(s => s.items)
 const itemOf = (p: FiletreePanel, id: string) => itemsOf(p).find(i => 'id' in i && i.id === id) as any
 
-test('the Files tab: summary, View and Settings in English', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+test('the Files tab: summary, then the Pane, Tree and Claude’s activity sections in English', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main...origin/main\0', numstat: '' }, ran)
@@ -1347,22 +1356,31 @@ test('the Files tab: summary, View and Settings in English', { timeoutMs: 20_000
   await clock.settle()
   const p = await panelOf($)
   expect(p.title).toBe('Files')
-  expect(p.summary).toBe('~/proj · pane open · branch main')
-  expect(p.sections.map(s => [s.id, s.title])).toEqual([['view', 'View'], ['settings', 'Settings']])
-  expect(p.sections[0]?.items.map(i => ('id' in i ? i.id : i.kind))).toEqual(['open', 'folder', 'close'])
-  expect(itemOf(p, 'open')).toMatchObject({ kind: 'action', label: 'Open the file tree', primary: true })
-  expect(itemOf(p, 'close')).toMatchObject({ kind: 'action', label: 'Close the file tree' })
-  expect(p.sections[1]?.items.map(i => ('id' in i ? i.id : i.kind))).toEqual(['activity', 'glyphs', 'follow', 'start', 'column', 'hints', 'open'].map(f => `config:${f}`))
-  expect(itemOf(p, 'config:activity')).toMatchObject({ kind: 'choice', label: 'Claude activity', value: 'writes' })
+  expect(p.summary).toBe('open · ~/proj · main')
+  expect(p.tone).toBe('ok')
+  expect(p.sections.map(s => [s.id, s.title])).toEqual([['pane', 'Pane'], ['tree', 'Tree'], ['claude', 'Claude’s activity']])
+  const ids = (i: number) => p.sections[i]?.items.map(item => ('id' in item ? item.id : item.kind))
+  expect(ids(0)).toEqual(['close', 'folder', 'open', 'config:start', 'config:open'])
+  expect(ids(1)).toEqual(['hidden', 'config:column', 'config:glyphs', 'config:hints'])
+  expect(ids(2)).toEqual(['config:activity', 'config:follow'])
+  expect(itemOf(p, 'close')).toMatchObject({ kind: 'action', label: 'Close', scope: 'session' })
+  expect(itemOf(p, 'folder')).toMatchObject({ kind: 'input', label: 'Folder', scope: 'session' })
+  expect(itemOf(p, 'folder').help).toContain('Now: ~/proj, following the working folder')
+  expect(itemOf(p, 'hidden')).toMatchObject({ kind: 'toggle', label: 'Hidden files', value: true })
+  expect(itemOf(p, 'hidden').scope).toBeUndefined()
+  expect(itemOf(p, 'config:activity')).toMatchObject({ kind: 'choice', label: 'Show activity', value: 'writes' })
   expect(itemOf(p, 'config:column')).toMatchObject({ kind: 'choice', value: 'age', options: [{ value: 'date', label: 'date' }, { value: 'age', label: 'age' }, { value: 'size', label: 'size' }] })
-  expect(itemOf(p, 'config:glyphs')).toMatchObject({ kind: 'choice', value: 'auto' })
+  expect(itemOf(p, 'config:glyphs')).toMatchObject({ kind: 'choice', label: 'Icons', value: 'auto' })
+  expect(itemOf(p, 'config:follow')).toMatchObject({ kind: 'toggle', label: 'Follow Claude', value: true })
+  expect(itemOf(p, 'config:start')).toMatchObject({ kind: 'toggle', label: 'Open at start', value: true })
   expect(itemOf(p, 'config:open')).toMatchObject({ kind: 'input', label: 'Open with' })
   expect(itemOf(p, 'config:open').help).toContain('code -g {path}')
   expect(JSON.stringify(p)).not.toContain('/filetree')
   w.panes = []
   const closed = await panelOf($)
-  expect(closed.summary).toContain('pane closed')
+  expect(closed.summary).toBe('closed · ~/proj · main')
   expect(itemOf(closed, 'close')).toBeUndefined()
+  expect(itemOf(closed, 'open')).toMatchObject({ kind: 'action', label: 'Open', primary: true, scope: 'session' })
 })
 
 test('the Files tab speaks Portuguese when the hub does', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
@@ -1375,13 +1393,14 @@ test('the Files tab speaks Portuguese when the hub does', { timeoutMs: 20_000, p
   await clock.settle()
   const p = await panelOf($, { lang: 'pt' })
   expect(p.title).toBe('Arquivos')
-  expect(p.summary).toBe('~/proj · painel aberto')
-  expect(p.sections.map(s => s.title)).toEqual(['Visualização', 'Ajustes'])
-  expect(itemOf(p, 'open').label).toBe('Abrir a árvore de arquivos')
-  expect(itemOf(p, 'close').label).toBe('Fechar a árvore de arquivos')
+  expect(p.summary).toBe('aberto · ~/proj')
+  expect(p.sections.map(s => s.title)).toEqual(['Painel', 'Árvore', 'Atividade do Claude'])
+  expect(itemOf(p, 'open').label).toBe('Focar')
+  expect(itemOf(p, 'close').label).toBe('Fechar')
+  expect(itemOf(p, 'hidden').label).toBe('Arquivos ocultos')
   expect(itemOf(p, 'config:column').label).toBe('Coluna da direita')
   expect(itemOf(p, 'config:open').help).toContain('Agora: code -g {path}')
-  const english = ['Open the file tree', 'Settings', 'View', 'Right column', 'pane open', 'Now:']
+  const english = ['Close', 'Focus', 'Pane', 'Tree', 'Right column', 'Hidden files', 'open ·', 'Now:']
   for (const words of english) expect(JSON.stringify(p)).not.toContain(words)
   w.deny = 'locked by policy'
   expect((await act($, { id: 'config:column', value: 'size' })).message).toBe('Coluna da direita não mudou: locked by policy')
@@ -1429,6 +1448,36 @@ test('a setting changed in the tab is written to its userConfig field', { timeou
   expect(w.sets).toEqual([{ key: 'filetree.column', value: 'size' }, { key: 'filetree.open', value: 'preview' }])
   expect((await act($, { id: 'config:column', value: 'colour' })).message).toContain('not an option')
   expect(w.sets).toHaveLength(2)
+})
+
+test('hidden files is the user’s setting: the tab and the button write the store, and another session’s change is picked up', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  const store: Record<string, unknown> = {}
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['.env', 'file'], ['a.ts', 'file']] }, status: '', numstat: '', store }, ran)
+  modsWorld(on, { panes: ['filetree'], rows: ROWS, sets: [] })
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(await texts(ui)).toContain('.env')
+  expect(await act($, { id: 'hidden', value: 'off' })).toEqual({})
+  await clock.settle()
+  expect(store.showHidden).toBe(false)
+  expect(await texts(ui)).not.toContain('.env')
+  expect(itemOf(await panelOf($), 'hidden').value).toBe(false)
+  await ui.press({ key: 'hidden' })
+  await clock.settle()
+  expect(store.showHidden).toBe(true)
+  expect(await texts(ui)).toContain('.env')
+  // Another session turns it off: the store changes under this one, which follows within 3 s.
+  store.showHidden = false
+  await clock.advance(3_100)
+  await clock.settle()
+  expect(await texts(ui)).not.toContain('.env')
+  store.showHidden = true
+  expect(itemOf(await panelOf($), 'hidden').value).toBe(true)
+  await ui.unmount()
 })
 
 test('no /filetree slash command is registered', { timeoutMs: 20_000 }, async ($, on) => {

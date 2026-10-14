@@ -91,10 +91,15 @@ const SIZE_TIMEOUT_MS = 15_000
 const SIZE_JOBS = 2
 const SIZE_WALK_LIMIT = 50_000
 const AGE_TICK_MS = 60_000
+// The user's settings that live in the store rather than in userConfig, and how often another
+// session's change to them is picked up.
+const HIDDEN_KEY = 'showHidden'
+const STORE_POLL_MS = 3_000
 
 let blink: Timer | null = null
 let themePoll: Timer | null = null
 let ageTick: Timer | null = null
+let storePoll: Timer | null = null
 let themeMtime: number | null = null
 let generation = 0
 let lastPress = { key: '', at: 0 }
@@ -173,6 +178,31 @@ async function put($: EngineInterface, fn: (t: FileTree) => FileTree): Promise<v
 
 function patch($: EngineInterface, fn: (t: FileTree) => Partial<FileTree>) {
   return put($, t => ({ ...t, ...fn(t) }))
+}
+
+// Hidden files is the user's setting: the store holds it for every session and project, and
+// the tree atom only mirrors it for the draws of this one.
+async function storedHidden($: EngineInterface): Promise<boolean> {
+  try {
+    return (await $.store.get(HIDDEN_KEY)) !== false
+  } catch {
+    return true
+  }
+}
+
+async function setHidden($: EngineInterface, on: boolean): Promise<void> {
+  await patch($, () => ({ showHidden: on }))
+  try {
+    await $.store.set(HIDDEN_KEY, on)
+  } catch {
+    $.ui.toast('Could not save the hidden files setting')
+  }
+}
+
+// Picks up a change another session wrote; the atom moves only when the stored value did.
+async function pullSettings($: EngineInterface): Promise<void> {
+  const on = await storedHidden($)
+  if ((await get($)).showHidden !== on) await patch($, () => ({ showHidden: on }))
 }
 
 async function activities($: EngineInterface): Promise<Activity[]> {
@@ -1060,7 +1090,7 @@ async function pressHeader($: EngineInterface, id: string): Promise<void> {
     await detectRepo($)
     await refreshGit($)
     if (t.query.trim()) await search($, t.query)
-  } else if (id === 'hidden') await patch($, cur => ({ showHidden: !cur.showHidden }))
+  } else if (id === 'hidden') await setHidden($, !t.showHidden)
   else if (id === 'size') await patch($, cur => ({ showSize: !cur.showSize }))
   else if (id === 'collapse') await patch($, cur => ({ expanded: [], nodes: dropBelow(cur.nodes, cur.nodes.filter(x => x.parent === cur.root && x.kind === 'dir').map(x => x.id)) }))
   else if (id === 'unselect') await patch($, () => ({ selected: '' }))
@@ -1080,78 +1110,71 @@ function shortPath(path: string): string {
 }
 
 type Words = { en: string; pt: string }
-type Field = { field: string; label: Words; help: Words; options?: string[]; fallback: string }
+type Field = { field: string; section: 'pane' | 'tree' | 'claude'; label: Words; help: Words; options?: string[]; toggle?: true; fallback: string }
 
-// One row per `userConfig` field in plugin.json, in its order.
+// One row per `userConfig` field in plugin.json. A field whose options are on and off is a
+// toggle; the others are a choice, or a text field for Open with.
 const FIELDS: Field[] = [
   {
-    field: 'activity',
-    label: { en: 'Claude activity', pt: 'Atividade do Claude' },
-    help: {
-      en: 'Which of Claude’s file activity shimmers in the tree: reads in purple, writes in orange, git in green',
-      pt: 'Qual atividade do Claude nos arquivos brilha na árvore: leituras em roxo, escritas em laranja, git em verde',
-    },
-    options: ['reads and writes', 'writes', 'reads', 'none'],
-    fallback: 'reads and writes',
-  },
-  {
-    field: 'glyphs',
-    label: { en: 'Glyphs', pt: 'Ícones' },
-    help: {
-      en: 'auto uses Nerd Font icons when one is installed, except in the desktop app; plain uses Unicode only',
-      pt: 'auto usa ícones Nerd Font quando há uma instalada, exceto no app desktop; plain usa só Unicode',
-    },
-    options: ['auto', 'nerd', 'plain'],
-    fallback: 'auto',
-  },
-  {
-    field: 'follow',
-    label: { en: 'Follow Claude', pt: 'Seguir o Claude' },
-    help: {
-      en: 'on: the tree scrolls to what Claude reads, writes or commits. off: only your own scrolling moves it',
-      pt: 'on: a árvore rola até o que o Claude lê, escreve ou commita. off: só a sua rolagem a move',
-    },
-    options: ['on', 'off'],
-    fallback: 'on',
-  },
-  {
     field: 'start',
+    section: 'pane',
     label: { en: 'Open at start', pt: 'Abrir ao iniciar' },
-    help: {
-      en: 'on: the pane opens when a session starts. off: it stays closed until you open it from /mods',
-      pt: 'on: o painel abre quando uma sessão começa. off: fica fechado até você abri-lo pelo /mods',
-    },
+    help: { en: 'Opens the pane when a session starts; off keeps it closed until you open it here', pt: 'Abre o painel quando uma sessão começa; desligado, ele fica fechado até você abri-lo aqui' },
     options: ['on', 'off'],
-    fallback: 'on',
-  },
-  {
-    field: 'column',
-    label: { en: 'Right column', pt: 'Coluna da direita' },
-    help: {
-      en: 'What the right column shows by default: date last modified, age since then, or size',
-      pt: 'O que a coluna da direita mostra por padrão: data da última modificação, idade desde então ou tamanho',
-    },
-    options: ['date', 'age', 'size'],
-    fallback: 'date',
-  },
-  {
-    field: 'hints',
-    label: { en: 'Hints', pt: 'Dicas' },
-    help: {
-      en: 'on: outside a git repo, a line under the header says git status starts after git init. off: hidden',
-      pt: 'on: fora de um repositório git, uma linha sob o cabeçalho diz que o status do git começa após git init. off: oculta',
-    },
-    options: ['on', 'off'],
+    toggle: true,
     fallback: 'on',
   },
   {
     field: 'open',
+    section: 'pane',
     label: { en: 'Open with', pt: 'Abrir com' },
     help: {
       en: 'What a double-click or Enter does with a file. Empty: the default app; preview: show it in the pane; anything else: a command, {path} the file and {dir} its folder',
       pt: 'O que um duplo clique ou Enter faz com um arquivo. Vazio: o app padrão; preview: mostra no painel; qualquer outra coisa: um comando, {path} o arquivo e {dir} a pasta',
     },
     fallback: '',
+  },
+  {
+    field: 'column',
+    section: 'tree',
+    label: { en: 'Right column', pt: 'Coluna da direita' },
+    help: { en: 'What it shows by default: the date last modified, the age since then, or the size. The Sizes button switches', pt: 'O que ela mostra por padrão: a data da última modificação, a idade desde então ou o tamanho. O botão Sizes alterna' },
+    options: ['date', 'age', 'size'],
+    fallback: 'date',
+  },
+  {
+    field: 'glyphs',
+    section: 'tree',
+    label: { en: 'Icons', pt: 'Ícones' },
+    help: { en: 'auto uses Nerd Font icons in a terminal that has one; plain uses Unicode only; nerd always uses Nerd Font', pt: 'auto usa ícones Nerd Font num terminal que tenha uma; plain usa só Unicode; nerd sempre usa Nerd Font' },
+    options: ['auto', 'nerd', 'plain'],
+    fallback: 'auto',
+  },
+  {
+    field: 'hints',
+    section: 'tree',
+    label: { en: 'No-repo hint', pt: 'Aviso sem repositório' },
+    help: { en: 'Outside a git repo, a line under the header says git status starts after git init', pt: 'Fora de um repositório git, uma linha sob o cabeçalho diz que o status do git começa após git init' },
+    options: ['on', 'off'],
+    toggle: true,
+    fallback: 'on',
+  },
+  {
+    field: 'activity',
+    section: 'claude',
+    label: { en: 'Show activity', pt: 'Mostrar atividade' },
+    help: { en: 'Which of Claude’s file activity glows in the tree: reads, writes in the accent, git in green', pt: 'Qual atividade do Claude nos arquivos brilha na árvore: leituras, escritas na cor de destaque, git em verde' },
+    options: ['reads and writes', 'writes', 'reads', 'none'],
+    fallback: 'reads and writes',
+  },
+  {
+    field: 'follow',
+    section: 'claude',
+    label: { en: 'Follow Claude', pt: 'Seguir o Claude' },
+    help: { en: 'Scrolls the tree to what Claude reads, writes or commits; off, only your own scrolling moves it', pt: 'Rola a árvore até o que o Claude lê, escreve ou commita; desligado, só a sua rolagem a move' },
+    options: ['on', 'off'],
+    toggle: true,
+    fallback: 'on',
   },
 ]
 
@@ -1180,81 +1203,90 @@ async function configValues($: EngineInterface): Promise<Record<string, string>>
   return values
 }
 
+function fieldItem(lang: FiletreeLang, spec: Field, value: string): FiletreeItem {
+  const id = `config:${spec.field}`
+  const label = say(lang, spec.label)
+  const help = say(lang, spec.help)
+  if (spec.toggle) return { kind: 'toggle', id, label, help, value: value !== 'off' }
+  if (spec.options) return { kind: 'choice', id, label, help, value, options: spec.options.map(option => ({ value: option, label: option })) }
+  return {
+    kind: 'input',
+    id,
+    label,
+    help: `${say(lang, { en: 'Now', pt: 'Agora' })}: ${value || say(lang, { en: 'the default app', pt: 'o app padrão' })}. ${help}`,
+    placeholder: 'preview',
+    submitLabel: say(lang, { en: 'Save', pt: 'Salvar' }),
+  }
+}
+
 // `$.filetree.panel`: the Files tab of the /mods hub.
 async function panelOf($: EngineInterface, args: FiletreePanelArgs): Promise<FiletreePanel> {
   const lang: FiletreeLang = args?.lang === 'pt' ? 'pt' : 'en'
   hubLang = lang
+  await pullSettings($)
   const t = await get($)
   const root = t.root || (await cwdOf($))
   const isOpen = await paneIsOpen($)
   const branch = t.branch?.head ?? ''
-  const summary = [
-    shortPath(root),
-    isOpen ? say(lang, { en: 'pane open', pt: 'painel aberto' }) : say(lang, { en: 'pane closed', pt: 'painel fechado' }),
-    branch ? `${say(lang, { en: 'branch', pt: 'branch' })} ${branch}` : '',
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const summary = [isOpen ? say(lang, { en: 'open', pt: 'aberto' }) : say(lang, { en: 'closed', pt: 'fechado' }), shortPath(root), branch].filter(Boolean).join(' · ')
 
-  const view: FiletreeItem[] = [
-    {
-      kind: 'action',
-      id: 'open',
-      label: say(lang, { en: 'Open the file tree', pt: 'Abrir a árvore de arquivos' }),
-      help: say(lang, {
-        en: 'Opens the pane on the working folder, which it follows, and gives it the keyboard',
-        pt: 'Abre o painel na pasta de trabalho, que ele acompanha, e passa o teclado para ele',
-      }),
-      primary: true,
-    },
+  const pane: FiletreeItem[] = [
+    isOpen
+      ? {
+          kind: 'action',
+          id: 'close',
+          label: say(lang, { en: 'Close', pt: 'Fechar' }),
+          help: say(lang, { en: 'Closes the pane; it stays closed until you open it again', pt: 'Fecha o painel; ele fica fechado até você abri-lo de novo' }),
+          scope: 'session',
+        }
+      : {
+          kind: 'action',
+          id: 'open',
+          label: say(lang, { en: 'Open', pt: 'Abrir' }),
+          help: say(lang, { en: 'Opens the pane on the working folder, which it follows, and gives it the keyboard', pt: 'Abre o painel na pasta de trabalho, que ele acompanha, e passa o teclado para ele' }),
+          primary: true,
+          scope: 'session',
+        },
     {
       kind: 'input',
       id: 'folder',
-      label: say(lang, { en: 'Show a folder', pt: 'Mostrar uma pasta' }),
-      help: say(lang, {
-        en: 'Pins the tree to a folder, absolute or relative to the working folder, until you open the file tree again',
-        pt: 'Fixa a árvore numa pasta, absoluta ou relativa à pasta de trabalho, até você abrir a árvore de arquivos de novo',
-      }),
+      label: say(lang, { en: 'Folder', pt: 'Pasta' }),
+      help: `${say(lang, { en: 'Now', pt: 'Agora' })}: ${shortPath(root)}${follow ? say(lang, { en: ', following the working folder', pt: ', acompanhando a pasta de trabalho' }) : ''}. ${say(lang, {
+        en: 'Shows another folder, absolute or relative to the working folder, until you open the pane again',
+        pt: 'Mostra outra pasta, absoluta ou relativa à pasta de trabalho, até você abrir o painel de novo',
+      })}`,
       placeholder: '~/projects/app',
       submitLabel: say(lang, { en: 'Show', pt: 'Mostrar' }),
+      scope: 'session',
     },
   ]
   if (isOpen)
-    view.push({
+    pane.push({
       kind: 'action',
-      id: 'close',
-      label: say(lang, { en: 'Close the file tree', pt: 'Fechar a árvore de arquivos' }),
-      help: say(lang, { en: 'It stays closed until you open it again', pt: 'Fica fechada até você abri-la de novo' }),
+      id: 'open',
+      label: say(lang, { en: 'Focus', pt: 'Focar' }),
+      help: say(lang, { en: 'Back to the working folder, and the keyboard to the tree', pt: 'Volta à pasta de trabalho e passa o teclado para a árvore' }),
+      scope: 'session',
     })
 
   const values = await configValues($)
-  const settings: FiletreeItem[] = FIELDS.map(spec =>
-    spec.options
-      ? {
-          kind: 'choice' as const,
-          id: `config:${spec.field}`,
-          label: say(lang, spec.label),
-          help: say(lang, spec.help),
-          value: values[spec.field] ?? spec.fallback,
-          options: spec.options.map(value => ({ value, label: value })),
-        }
-      : {
-          kind: 'input' as const,
-          id: `config:${spec.field}`,
-          label: say(lang, spec.label),
-          help: `${say(lang, { en: 'Now', pt: 'Agora' })}: ${values[spec.field] || say(lang, { en: 'the default app', pt: 'o app padrão' })}. ${say(lang, spec.help)}`,
-          placeholder: 'preview',
-          submitLabel: say(lang, { en: 'Save', pt: 'Salvar' }),
-        },
-  )
+  const of = (section: Field['section']) => FIELDS.filter(spec => spec.section === section).map(spec => fieldItem(lang, spec, values[spec.field] ?? spec.fallback))
+  const hidden: FiletreeItem = {
+    kind: 'toggle',
+    id: 'hidden',
+    label: say(lang, { en: 'Hidden files', pt: 'Arquivos ocultos' }),
+    help: say(lang, { en: 'Shows dotfiles in the tree; the Hidden button switches it too', pt: 'Mostra os dotfiles na árvore; o botão Hidden também alterna' }),
+    value: t.showHidden,
+  }
 
   return {
     title: say(lang, { en: 'Files', pt: 'Arquivos' }),
     summary,
     tone: isOpen ? 'ok' : 'muted',
     sections: [
-      { id: 'view', title: say(lang, { en: 'View', pt: 'Visualização' }), items: view },
-      { id: 'settings', title: say(lang, { en: 'Settings', pt: 'Ajustes' }), items: settings },
+      { id: 'pane', title: say(lang, { en: 'Pane', pt: 'Painel' }), items: [...pane, ...of('pane')] },
+      { id: 'tree', title: say(lang, { en: 'Tree', pt: 'Árvore' }), items: [hidden, ...of('tree')] },
+      { id: 'claude', title: say(lang, { en: 'Claude’s activity', pt: 'Atividade do Claude' }), items: of('claude') },
     ],
   }
 }
@@ -1289,6 +1321,10 @@ async function actOn($: EngineInterface, args: FiletreeActArgs): Promise<Filetre
     } catch (err) {
       return { message: `${say(lang, { en: 'The file tree did not close', pt: 'A árvore de arquivos não fechou' })}: ${err instanceof Error ? err.message : String(err)}` }
     }
+    return {}
+  }
+  if (id === 'hidden') {
+    await setHidden($, value === 'on')
     return {}
   }
   const spec = id.startsWith('config:') ? FIELDS.find(f => f.field === id.slice('config:'.length)) : undefined
@@ -1342,6 +1378,9 @@ export const register: Register = (on, options) => {
     useDrives(windows)
     home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
     activityId = Math.max(activityId, ...(await activities($)).map(a => a.id))
+    await pullSettings($)
+    storePoll?.cancel()
+    storePoll = $.clock.every(STORE_POLL_MS, () => void pullSettings($))
     void (async () => {
       pointer = await finePointerOk($)
       try {
