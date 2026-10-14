@@ -40,11 +40,11 @@ Installed it as `filetree@filetree` before the repository was renamed? Nothing t
 
 ## Features
 
-- Interactive file tree for the working directory where you're using Claude Code; it follows the cwd, or **Show a folder** in the Files tab of `/mods` pins another folder
+- Interactive file tree for the working directory where you're using Claude Code; it follows the cwd, or **Folder** in the Files tab of `/mods` pins another folder
 - Search the file tree, including folders you have not opened yet
 - Git status per file and folder in color, with exact lines changed (`+N` `-N`) on modified files and `?:N M:N D:N` file counts on folders
 - Branch, upstream and ahead/behind in the header
-- Visual indicator of Claude reads and searches (purple), writes (orange) and commits (green); collapsed folders open to show the file
+- Visual indicator of Claude reads and searches, writes and commits; collapsed folders open to show the file. In the desktop app the colours come from the skin chosen in skins (reads glint in its read colour, writes in the accent, git in green); in the terminal reads are purple, writes orange and commits green
 
   <img src="media/filetree-read.gif" alt="Files shimmer purple while Claude reads and searches them" width="800">
 
@@ -56,14 +56,15 @@ Installed it as `filetree@filetree` before the repository was renamed? Nothing t
 
   <img src="media/filetree-ask.gif" alt="Selecting config.yaml in the tree and asking Claude what it changed there" width="800">
 
-- File and folder sizes: the `Σ` header button swaps the date column for sizes; folders show their disk usage (`du`, or a summed listing on Windows), worked out in the background for the rows on screen and refreshed after Claude writes
+- File and folder sizes: the **Sizes** header button (`Σ` in the terminal) swaps the date column for sizes; folders show their disk usage (`du`, or a summed listing on Windows), worked out in the background for the rows on screen and refreshed after Claude writes
 - Double-click a file to open it in its default app
 - On macOS, Space on a file shows it in Quick Look
 - Click to select, arrow keys to move through the tree
 - Hover a button (header, the preview's back, the search's clear) to see what it does
 - Light on large repos: outside a repo it only checks once whether one exists, and every git call is scoped to the cwd
-- Nerd Font icons with a plain Unicode fallback
-- On Omarchy, the pane takes its colors and background from the current theme and follows theme switches
+- In the desktop app the pane is drawn in the claude-mods pack's shared kit: native buttons that name their action, the app's own text colours, and the skin chosen in skins (Claude Code's own colours without it); a folder row has its caret and no type glyph there
+- In the terminal, Nerd Font icons with a plain Unicode fallback
+- On Omarchy, the terminal pane takes its colors and background from the current theme and follows theme switches
 - Every piece of the pane (rows in each git state, header buttons, branch row, activity shimmer and chip, preview) shows by name in the Components tab of `/mods`, so you can point at one and ask for a change
 
 ### Resizing the pane
@@ -76,15 +77,17 @@ You can resize the pane with the mouse, or by setting custom `pane:grow` or `pan
 
 ## Settings
 
-All settings are in `/config` under filetree, and in the Settings section of the Files tab in `/mods`. A change there reloads the mod with the new value.
+All settings are in the Files tab of `/mods`, grouped as Pane, Tree and Claude's activity; the userConfig ones are also in `/config` under filetree, and a change there reloads the mod with the new value. Every setting is yours, the same in every session and project. Open, Close, Focus and Folder in the Pane section act on this session's pane only.
 
-- **Claude activity:** what shimmers: `reads and writes` (default), `writes`, `reads` or `none`. Git status, line counts and the git status at the bottom always show.
+- **Hidden files:** on (default) shows dotfiles; the **Hidden** header button switches it too. It is kept in the mod's store, so a change in one session reaches the others within a few seconds.
+
+- **Show activity:** what shimmers: `reads and writes` (default), `writes`, `reads` or `none`. Git status, line counts and the git status at the bottom always show.
 - **Follow Claude:** `on` (default) scrolls the tree to what Claude reads, writes or commits; `off` keeps the view where you put it, and highlights still show.
 - **Open at start:** `on` (default) opens the pane when a session starts; `off` keeps it closed until you open it from `/mods`.
-- **Right column:** `date` (default), `age` or `size`; what the right column shows when a session starts. `age` shows how long ago a file changed in a few characters: `now`, `12m`, `3h`, `5d`, then the day (`Oct 9`) past a week and the year past a year. The `Σ` button in the header toggles between sizes and the dates or ages.
-- **Hints:** `on` (default) shows a line under the header outside a git repo saying git status starts after `git init`; `off` hides it.
-- **Open with:** empty (default) opens a double-clicked file in its default app. `preview` shows it in the pane instead: Markdown rendered, code highlighted, arrow keys, Page Up/Down and the wheel to scroll, `←`/`h` or `← files` back to the tree, `↗` the default app. Otherwise a command that double-click and Enter run instead: `{path}` is the file and `{dir}` its folder, and without `{path}` the path goes last. It runs without a shell, so quote a word that holds spaces, and it should start the viewer and return rather than wait for it. Examples: `zed {path}`, `code -g {path}`, or in herdr a tab running [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) on the file: `herdr plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement tab --focus --env HERDR_FILE_VIEWER_OPEN={path}`.
-- **Glyphs:** `auto` (default) uses Nerd Font icons when a Nerd Font is installed and your terminal started after it was installed, plain Unicode in the desktop app, and Nerd Font over SSH. `nerd` or `plain` forces one.
+- **Right column:** `date` (default), `age` or `size`; what the right column shows when a session starts. `age` shows how long ago a file changed in a few characters: `now`, `12m`, `3h`, `5d`, then the day (`Oct 9`) past a week and the year past a year. The **Sizes** button in the header (`Σ` in the terminal) toggles between sizes and the dates or ages.
+- **No-repo hint:** `on` (default) shows a line under the header outside a git repo saying git status starts after `git init`; `off` hides it.
+- **Open with:** empty (default) opens a double-clicked file in its default app. `preview` shows it in the pane instead: Markdown rendered, code highlighted, arrow keys, Page Up/Down and the wheel to scroll, `←`/`h` or the **Files** button (`← files` in the terminal) back to the tree, **Open** (`↗`) the default app. Otherwise a command that double-click and Enter run instead: `{path}` is the file and `{dir}` its folder, and without `{path}` the path goes last. It runs without a shell, so quote a word that holds spaces, and it should start the viewer and return rather than wait for it. Examples: `zed {path}`, `code -g {path}`, or in herdr a tab running [herdr-file-viewer](https://github.com/smarzban/herdr-file-viewer) on the file: `herdr plugin pane open --plugin herdr-file-viewer --entrypoint file-viewer --placement tab --focus --env HERDR_FILE_VIEWER_OPEN={path}`.
+- **Icons:** `auto` (default) uses Nerd Font icons when a Nerd Font is installed and your terminal started after it was installed, and Nerd Font over SSH; in the desktop app it draws no type glyphs. `nerd` or `plain` forces one.
 
 ## herdr
 
