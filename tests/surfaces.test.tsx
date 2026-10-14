@@ -1359,7 +1359,7 @@ const ROWS: Rows = [
 const itemsOf = (p: FiletreePanel) => p.sections.flatMap(s => s.items)
 const itemOf = (p: FiletreePanel, id: string) => itemsOf(p).find(i => 'id' in i && i.id === id) as any
 
-test('the Files tab: summary, then the Pane, Tree and Claude’s activity sections in English', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+test('the Files tab: summary, then the Pane, Tree and Claude’s activity sections in English', { timeoutMs: 20_000, options: { activity: 'writes', column: 'age', open: 'code -g {path}' }, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main...origin/main\0', numstat: '' }, ran)
@@ -1398,7 +1398,7 @@ test('the Files tab: summary, then the Pane, Tree and Claude’s activity sectio
   expect(closed.sections[0]?.items.at(-1)).toMatchObject({ id: 'open' })
 })
 
-test('the Files tab speaks Portuguese when the hub does', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+test('the Files tab speaks Portuguese when the hub does', { timeoutMs: 20_000, options: { activity: 'writes', column: 'age', open: 'code -g {path}' }, plugins: [HUB] }, async ($, on) => {
   const ran: Ran = []
   const root = '/home/k/proj'
   const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
@@ -1419,8 +1419,7 @@ test('the Files tab speaks Portuguese when the hub does', { timeoutMs: 20_000, p
   expect(itemOf(p, 'config:open').help).toContain('Agora: code -g {path}')
   const english = ['Close', 'Focus', 'Pane', 'Tree', 'Right column', 'Hidden files', 'open ·', 'Now:']
   for (const words of english) expect(JSON.stringify(p)).not.toContain(words)
-  w.deny = 'locked by policy'
-  expect((await act($, { id: 'config:column', value: 'size' })).message).toBe('Coluna da direita não mudou: locked by policy')
+  expect((await act($, { id: 'config:column', value: 'colour' })).message).toBe('colour não é uma opção de Coluna da direita')
 })
 
 test('the open action opens and focuses the pane, close closes it and keeps it closed', { timeoutMs: 20_000, options: { start: 'off' }, plugins: [HUB] }, async ($, on) => {
@@ -1452,19 +1451,84 @@ test('the open action opens and focuses the pane, close closes it and keeps it c
   expect((await act($, { id: 'nope' })).message).toContain('nope')
 })
 
-test('a setting changed in the tab is written to its userConfig field', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
-  const ran: Ran = []
+// Every setting of the Files tab lives in filetree's store, one key each: a press writes it, the
+// panel and the pane follow at once, and another session's write is picked up within 3 s. The
+// engine lists no plugin userConfig rows in /config, so nothing goes through $.config.
+async function settingsWorld($: any, on: any, store: Record<string, unknown>) {
   const root = '/home/k/proj'
-  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '' }, ran)
-  const w: Mods = { panes: [], rows: ROWS, sets: [] }
+  const ran: Ran = []
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: '', dirs: { [root]: [['a.ts', 'file']] }, status: '', numstat: '', store }, ran)
+  const w: Mods = { panes: ['filetree'], rows: [], sets: [] }
   modsWorld(on, w)
   await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
   await clock.settle()
-  expect(await act($, { id: 'config:column', value: 'size' })).toEqual({})
-  expect(await act($, { id: 'config:open', value: ' preview ' })).toEqual({})
-  expect(w.sets).toEqual([{ key: 'filetree.column', value: 'size' }, { key: 'filetree.open', value: 'preview' }])
+  return { root, clock, ran, w }
+}
+
+test('a toggle setting: a press writes the store and the panel shows it, and another session’s value is picked up', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { clock, w } = await settingsWorld($, on, store)
+  expect(itemOf(await panelOf($), 'config:hints').value).toBe(true)
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(await texts(ui)).toContain('git init')
+  expect(await act($, { id: 'config:hints', value: 'off' })).toEqual({})
+  await clock.settle()
+  expect(store['setting:hints']).toBe('off')
+  expect(itemOf(await panelOf($), 'config:hints').value).toBe(false)
+  expect(await texts(ui)).not.toContain('git init')
+  store['setting:hints'] = 'on'
+  await clock.advance(3_100)
+  await clock.settle()
+  expect(await texts(ui)).toContain('git init')
+  store['setting:follow'] = 'off'
+  expect(itemOf(await panelOf($), 'config:follow').value).toBe(false)
+  expect(w.sets).toEqual([])
+  await ui.unmount()
+})
+
+test('a choice setting: the right column follows a press at once, and another session’s value', { timeoutMs: 20_000, options: { column: 'age' }, plugins: [HUB] }, async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { clock, ran } = await settingsWorld($, on, store)
+  expect(itemOf(await panelOf($), 'config:column').value).toBe('age')
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  expect(STAMP.test(await texts(ui))).toBe(false)
+  expect(await act($, { id: 'config:column', value: 'date' })).toEqual({})
+  await clock.settle()
+  expect(store['setting:column']).toBe('date')
+  expect(itemOf(await panelOf($), 'config:column').value).toBe('date')
+  expect(STAMP.test(await texts(ui))).toBe(true)
+  store['setting:column'] = 'size'
+  await clock.advance(3_100)
+  await clock.settle()
+  expect(itemOf(await panelOf($), 'config:column').value).toBe('size')
+  expect(STAMP.test(await texts(ui))).toBe(false)
   expect((await act($, { id: 'config:column', value: 'colour' })).message).toContain('not an option')
-  expect(w.sets).toHaveLength(2)
+  expect(store['setting:column']).toBe('size')
+  // A stored value that is no option counts as unset: the userConfig value applies again.
+  store['setting:column'] = 'colour'
+  expect(itemOf(await panelOf($), 'config:column').value).toBe('age')
+  expect(ran.some(a => a[0] === 'toast')).toBe(false)
+  await ui.unmount()
+})
+
+test('an input setting: Open with takes a press trimmed, a double-click runs it, and another session’s value', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const store: Record<string, unknown> = {}
+  const { root, clock, ran } = await settingsWorld($, on, store)
+  expect(itemOf(await panelOf($), 'config:open').help).toContain('Now: the default app')
+  expect(await act($, { id: 'config:open', value: ' zed {path} ' })).toEqual({})
+  expect(store['setting:open']).toBe('zed {path}')
+  expect(itemOf(await panelOf($), 'config:open').help).toContain('Now: zed {path}')
+  const ui = await $.ui.mount({ plugin: 'filetree', surface: 'terminal', component: 'Pane', requestId: 'filetree', props: paneProps(60) })
+  await clock.settle()
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await ui.post({ press: `${root}/a.ts` }, { in: 'rows' })
+  await clock.settle()
+  expect(ran.some(a => a.includes('zed') && a.includes(`${root}/a.ts`))).toBe(true)
+  store['setting:open'] = 'code -g {path}'
+  expect(itemOf(await panelOf($), 'config:open').help).toContain('Now: code -g {path}')
+  await ui.unmount()
 })
 
 test('hidden files is the user’s setting: the tab and the button write the store, and another session’s change is picked up', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {

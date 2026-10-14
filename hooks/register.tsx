@@ -213,10 +213,69 @@ async function setHidden($: EngineInterface, on: boolean): Promise<void> {
   }
 }
 
-// Picks up a change another session wrote; the atom moves only when the stored value did.
+// Every other setting (the FIELDS of the Files tab) is the user's too, one store key each. The
+// store is the source of truth; `initial` is what applies while a field was never set there:
+// the plugin's userConfig value when one was given, else the field's default. `settings` holds
+// the effective values this session draws with.
+const SETTING_KEY = (field: string) => `setting:${field}`
+let initial: Record<string, string> = {}
+let settings: Record<string, string> = {}
+
+const setting = (field: string): string => settings[field] ?? initial[field] ?? FIELDS.find(f => f.field === field)?.fallback ?? ''
+
+async function storedSettings($: EngineInterface): Promise<Record<string, string>> {
+  const out: Record<string, string> = {}
+  for (const spec of FIELDS) {
+    let stored: unknown
+    try {
+      stored = await $.store.get(SETTING_KEY(spec.field))
+    } catch {
+      stored = undefined
+    }
+    const value = typeof stored === 'string' && (!spec.options || spec.options.includes(stored)) ? stored : (initial[spec.field] ?? spec.fallback)
+    out[spec.field] = value
+  }
+  return out
+}
+
+// Puts the effective values into the switches the hooks read. A changed right column moves the
+// open tree to it at once; the age clock runs only while ages show.
+function applySettings($: EngineInterface, next: Record<string, string>): void {
+  const before = settings
+  settings = next
+  glyphSetting = setting('glyphs')
+  const activity = setting('activity')
+  showReads = activity.includes('reads')
+  showWrites = activity.includes('writes')
+  followClaude = setting('follow') !== 'off'
+  sizeDefault = setting('column') === 'size'
+  showAge = setting('column') === 'age'
+  showHints = setting('hints') !== 'off'
+  openWithSetting = setting('open')
+  if (before.column !== undefined && before.column !== next.column) void patch($, () => ({ showSize: sizeDefault }))
+  if (showAge && !ageTick) ageTick = $.clock.every(AGE_TICK_MS, () => $.ui.invalidate('ui.render'))
+  if (!showAge && ageTick) {
+    ageTick.cancel()
+    ageTick = null
+  }
+}
+
+async function setSetting($: EngineInterface, field: string, value: string): Promise<void> {
+  await $.store.set(SETTING_KEY(field), value)
+  applySettings($, { ...settings, [field]: value })
+  void $.ui.invalidate('ui.render')
+}
+
+// Picks up a change another session wrote; the atom and the switches move only when a stored
+// value did.
 async function pullSettings($: EngineInterface): Promise<void> {
   const on = await storedHidden($)
   if ((await get($)).showHidden !== on) await patch($, () => ({ showHidden: on }))
+  const next = await storedSettings($)
+  if (FIELDS.some(spec => next[spec.field] !== settings[spec.field])) {
+    applySettings($, next)
+    void $.ui.invalidate('ui.render')
+  }
 }
 
 async function activities($: EngineInterface): Promise<Activity[]> {
@@ -1202,21 +1261,6 @@ async function paneIsOpen($: EngineInterface): Promise<boolean> {
   }
 }
 
-async function configValues($: EngineInterface): Promise<Record<string, string>> {
-  const values: Record<string, string> = {}
-  let rows: Awaited<ReturnType<EngineInterface['config']['list']>> = []
-  try {
-    rows = await $.config.list()
-  } catch {
-    rows = []
-  }
-  for (const spec of FIELDS) {
-    const row = rows.find(r => r.key === `filetree.${spec.field}`)
-    values[spec.field] = row && typeof row.value === 'string' ? row.value : spec.fallback
-  }
-  return values
-}
-
 function fieldItem(lang: FiletreeLang, spec: Field, value: string): FiletreeItem {
   const id = `config:${spec.field}`
   const label = say(lang, spec.label)
@@ -1289,7 +1333,7 @@ async function panelOf($: EngineInterface, args: FiletreePanelArgs): Promise<Fil
         },
       ]
 
-  const values = await configValues($)
+  const values = settings
   const of = (section: Field['section']) => FIELDS.filter(spec => spec.section === section).map(spec => fieldItem(lang, spec, values[spec.field] ?? spec.fallback))
   const hidden: FiletreeItem = {
     kind: 'toggle',
@@ -1354,8 +1398,7 @@ async function actOn($: EngineInterface, args: FiletreeActArgs): Promise<Filetre
     }
     const failed = say(lang, { en: `${spec.label.en} did not change`, pt: `${spec.label.pt} não mudou` })
     try {
-      const result = await $.config.set({ key: `filetree.${spec.field}`, value: spec.options ? value : value.trim() })
-      if (result.deny) return { message: `${failed}: ${result.deny}` }
+      await setSetting($, spec.field, spec.options ? value : value.trim())
     } catch (err) {
       return { message: `${failed}: ${err instanceof Error ? err.message : String(err)}` }
     }
@@ -1373,16 +1416,18 @@ async function catalog($: EngineInterface, args: FiletreePanelArgs): Promise<Fil
 }
 
 export const register: Register = (on, options) => {
-  glyphSetting = typeof options?.glyphs === 'string' ? options.glyphs : 'auto'
-  const activity = typeof options?.activity === 'string' ? options.activity : 'reads and writes'
-  showReads = activity.includes('reads')
-  showWrites = activity.includes('writes')
-  followClaude = options?.follow !== 'off'
-  sizeDefault = options?.column === 'size'
-  showAge = options?.column === 'age'
-  showHints = options?.hints !== 'off'
-  openWithSetting = typeof options?.open === 'string' ? options.open : ''
-  noDock = options?.start === 'off'
+  // The userConfig values stand only until the user sets a field in the Files tab.
+  initial = Object.fromEntries(FIELDS.map(spec => [spec.field, typeof options?.[spec.field] === 'string' && (!spec.options || spec.options.includes(options[spec.field] as string)) ? (options[spec.field] as string) : spec.fallback]))
+  settings = { ...initial }
+  glyphSetting = setting('glyphs')
+  showReads = setting('activity').includes('reads')
+  showWrites = setting('activity').includes('writes')
+  followClaude = setting('follow') !== 'off'
+  sizeDefault = setting('column') === 'size'
+  showAge = setting('column') === 'age'
+  showHints = setting('hints') !== 'off'
+  openWithSetting = setting('open')
+  noDock = setting('start') === 'off'
   // Adds `$.filetree` for the /mods hub; a call is the event the hooks below answer.
   on('engine.create', async ($, e, next) => {
     const built = await next(e)
@@ -1399,6 +1444,7 @@ export const register: Register = (on, options) => {
     home = posix(((await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || '').replace(/[\\/]+$/, ''))
     activityId = Math.max(activityId, ...(await activities($)).map(a => a.id))
     await pullSettings($)
+    noDock = setting('start') === 'off'
     storePoll?.cancel()
     storePoll = $.clock.every(STORE_POLL_MS, () => void pullSettings($))
     void (async () => {

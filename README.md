@@ -77,9 +77,9 @@ You can resize the pane with the mouse, or by setting custom `pane:grow` or `pan
 
 ## Settings
 
-All settings are in the Files tab of `/mods`, grouped as Pane, Tree and Claude's activity; the userConfig ones are also in `/config` under filetree, and a change there reloads the mod with the new value. Every setting is yours, the same in every session and project. Open, Close, Focus and Folder in the Pane section act on this session's pane only.
+All settings are in the Files tab of `/mods`, grouped as Pane, Tree and Claude's activity. Every setting is yours, kept in the mod's store: the same in every session and project, applied at once, and a change in one session reaches the others within a few seconds. Until you set one there, the value given in the plugin's userConfig (`pluginConfigs` in settings.json) applies, else the default. Open at start takes effect at the next session start. Open, Close, Focus and Folder in the Pane section act on this session's pane only.
 
-- **Hidden files:** on (default) shows dotfiles; the **Hidden** header button switches it too. It is kept in the mod's store, so a change in one session reaches the others within a few seconds.
+- **Hidden files:** on (default) shows dotfiles; the **Hidden** header button switches it too.
 
 - **Show activity:** what shimmers: `reads and writes` (default), `writes`, `reads` or `none`. Git status, line counts and the git status at the bottom always show.
 - **Follow Claude:** `on` (default) scrolls the tree to what Claude reads, writes or commits; `off` keeps the view where you put it, and highlights still show.
