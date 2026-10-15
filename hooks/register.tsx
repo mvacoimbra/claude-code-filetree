@@ -1467,6 +1467,8 @@ export const register: Register = (on, options) => {
       const cwd = await cwdOf($)
       if (!t.root || t.nodes.length === 0 || (follow && t.root !== cwd)) await reset($, cwd)
       else if (!noDock) await $.ui.open({ id: PANE, title: `Files: ${t.root.split('/').pop() || t.root}` })
+      // Off means closed at start, even when the app restores the panes it had open last time.
+      if (noDock && (await paneIsOpen($))) await $.ui.close({ id: PANE }).catch(() => undefined)
     })()
     return next(e)
   })

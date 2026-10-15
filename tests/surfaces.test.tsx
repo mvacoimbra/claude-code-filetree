@@ -1570,3 +1570,15 @@ test('no /filetree slash command is registered', { timeoutMs: 20_000 }, async ($
   await clock.settle()
   expect(registered.some((e: any) => e?.name === 'filetree')).toBe(false)
 })
+
+test('Open at start off closes a pane the app restored from last time', { timeoutMs: 20_000, plugins: [HUB] }, async ($, on) => {
+  const ran: Ran = []
+  const root = '/home/k/proj'
+  // The user's store says off, and the app brought the pane back on its own.
+  const clock = world(on, { os: 'linux', env: { HOME: '/home/k' }, cwd: root, top: root, dirs: { [root]: [['a.ts', 'file']] }, status: '## main...origin/main\0', numstat: '', store: { 'setting:start': 'off' } } as any, ran)
+  const w: Mods = { panes: ['filetree'], rows: [], sets: [] }
+  modsWorld(on, w)
+  await $.session.start({ cwd: root, surface: 'terminal', isInteractive: true })
+  await clock.settle()
+  expect(w.panes).toEqual([])
+})
